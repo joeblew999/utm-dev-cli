@@ -192,3 +192,22 @@ When debugging build failures: outputs land in the demo's `.build/<platform>/`
 inside the project dir you ran `vm build` from (`current_dir()` at command
 start). Open the demo in VS Code and the artifacts appear in the same
 workspace.
+
+## Future: vm run (launch + observe built app)
+
+Building is only half the story — to verify the app actually starts, we
+need a way to launch the bundled binary inside the VM and observe startup.
+
+Headless approach:
+  - Linux: `xvfb-run` (virtual framebuffer; bootstrap needs `apt install xvfb`)
+  - Windows: scheduled task running as the user; tail log file via SSH
+
+Out-of-band approach (preferred when available):
+  Joe's Tauri apps ship with a custom logger that streams events to a
+  Cloudflare endpoint. `vm run` then doesn't need to capture the app's
+  stdout — the logger handles observability. Pattern:
+    1. `vm run --name X --bin <bundle-path>` launches the binary
+    2. App's in-process logger sends startup events to the user's CF tail
+    3. Claude/user reads the CF tail URL to confirm clean startup
+
+Status: not yet implemented. Both `vm build` end-to-ends must validate first.
