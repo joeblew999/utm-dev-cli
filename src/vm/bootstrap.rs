@@ -249,21 +249,23 @@ Restart-Service sshd -ErrorAction SilentlyContinue
 
     // ── Full mode: dev tools ────────────────────────────────────────────────
 
-    // Step 4: VS Build Tools with C++ workload + native ARM64 compiler.
-    // The VCTools workload + --includeRecommended installs the x64 host
-    // toolchain, NOT the ARM64-hosted ARM64 compiler. On a Windows ARM64
-    // VM, `cargo build` (which targets aarch64-pc-windows-msvc by default)
-    // and VsDevCmd with `-arch=arm64 -host_arch=arm64` both need
-    // Microsoft.VisualStudio.Component.VC.Tools.ARM64 explicitly.
+    // Step 4: VS Build Tools with C++ workload + ARM64 cross-tools.
     //
-    // The VS bootstrapper handles fresh-install and modify-existing with
-    // the same `--add` flag, so we always pass both components and let the
-    // installer no-op what's already there.
-    let vswhere = r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe";
-    let vc_check = w.run_ps(&format!(
-        r#"if (Test-Path '{vswhere}') {{ & '{vswhere}' -products * -latest -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath 2>$null }} else {{ '' }}"#
-    ))?;
-    if vc_check.stdout.trim().is_empty() {
+    // History: we used to require `Microsoft.VisualStudio.Component.VC.Tools.ARM64`
+    // and feed that to `--add`. Both `vs_buildtools.exe` and `vs_installer.exe
+    // modify` accept the flag and exit 0, but on ARM64 hosts they DO NOT
+    // actually install Hostarm64\arm64 native tools — see GAPS.md #1
+    // ("BLOCKED_BY_MS"). That made the check forever fail, so every vm up
+    // re-ran the 100s installer for nothing.
+    //
+    // Idempotent-correct check: look for the actual binary we depend on,
+    // `Hostarm64\x64\link.exe` — the ARM64-host x64-target cross-linker.
+    // It IS installed by the VCTools workload + --includeRecommended on
+    // ARM64 hosts. Once present, skip the installer entirely.
+    let vc_check = w.run_ps(
+        r#"if (Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\*\bin\Hostarm64\x64\link.exe' -ErrorAction SilentlyContinue) { 'present' } else { 'missing' }"#
+    )?;
+    if vc_check.stdout.trim() != "present" {
         println!("  Downloading VS Build Tools bootstrapper...");
         w.run_ps(r"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12

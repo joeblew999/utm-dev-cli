@@ -156,13 +156,24 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     //   to the log file with `> log 2>&1` — loses live host-side streaming
     //   for that exact command, but exit codes propagate correctly. Use
     //   `vm logs --name X --follow` from a second terminal for live tail.
+    //
+    // We also rotate the log on entry: an aborted previous run can leave
+    // a zombie process holding the log file open (cmd.exe `>>` opens it
+    // without FILE_SHARE_DELETE). New runs that try to open the same
+    // path then fail with SHARING_VIOLATION. Renaming the file (or
+    // best-effort delete) gets us a clean slot every run; old logs are
+    // preserved as build.log.<unix-ts>.
     let log_path_h = match profile.os {
         GuestOs::Linux   => "~/.utm-dev-build/build.log",
         GuestOs::Windows => r"%USERPROFILE%\.utm-dev-build\build.log",
     };
     let mkdir_log = match profile.os {
-        GuestOs::Linux   => "mkdir -p ~/.utm-dev-build".to_string(),
-        GuestOs::Windows => r#"(if not exist "%USERPROFILE%\.utm-dev-build" mkdir "%USERPROFILE%\.utm-dev-build")"#.to_string(),
+        GuestOs::Linux   => "mkdir -p ~/.utm-dev-build && \
+                             ([ -f ~/.utm-dev-build/build.log ] && \
+                              mv -f ~/.utm-dev-build/build.log ~/.utm-dev-build/build.log.$(date +%s) 2>/dev/null || true)".to_string(),
+        GuestOs::Windows => {
+            r#"(if not exist "%USERPROFILE%\.utm-dev-build" mkdir "%USERPROFILE%\.utm-dev-build") & (powershell -NoProfile -Command "$p = '%USERPROFILE%\.utm-dev-build\build.log'; if (Test-Path $p) { Move-Item -Force $p ($p + '.' + [int][double]::Parse((Get-Date -UFormat %%s))) -ErrorAction SilentlyContinue }")"#.to_string()
+        }
     };
     let linux_tee = "exec > >(tee -a ~/.utm-dev-build/build.log) 2>&1; ";
 
@@ -177,12 +188,20 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
 
     let t_install = Instant::now();
     println!("→ Running mise install in VM (persistent log at {log_path_h})...");
-    // MISE_CARGO_BINSTALL=true tells mise to use cargo-binstall when
-    // installing `cargo:` tools that have prebuilt GitHub-release binaries
-    // (notably tauri-cli — drops a 25-min compile to a ~30-sec download).
-    // mise auto-bootstraps cargo-binstall itself on first use, so no
-    // separate install step needed. Falls back to cargo install if binstall
-    // can't find a matching binary.
+    // Speed-up env vars passed to mise install + cargo tauri build:
+    //   MISE_CARGO_BINSTALL=true — use cargo-binstall to fetch prebuilt
+    //     binaries (mainly tauri-cli) from GitHub Releases. ~30 sec download
+    //     vs ~25 min compile. mise auto-bootstraps cargo-binstall on first
+    //     use; falls back to source build if no prebuilt matches.
+    //   RUSTC_WRAPPER=sccache + SCCACHE_DIR — sccache caches compile
+    //     artifacts across projects. With it, e.g. tauri-plugin-fs@2.0
+    //     compiles ONCE on this VM, then every project pinning the same
+    //     version gets a cache hit (~no recompile). Big win for multi-
+    //     project Tauri dev. sccache is installed via mise alongside
+    //     cargo-binstall — so it's globally available after first run.
+    //   CARGO_INCREMENTAL=0 — sccache works best in non-incremental mode
+    //     (incremental compilation hashes change across projects); turning
+    //     it off improves cache hit rate.
     let install_cmd = if profile.os == GuestOs::Windows {
         // Two-phase mise install on ARM64 Windows:
         //   1. `mise install rust` — installs rustup + the project's pinned
@@ -190,7 +209,8 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         //      defaults to the host arch (aarch64-pc-windows-msvc).
         //   2. Switch rustup's default-host + active toolchain to x86_64.
         //      The aarch64 toolchain stays installed but inactive.
-        //   3. `mise install` (rest) — anything that compiles via cargo
+        //   3. Install sccache + cargo-binstall via mise (best-effort).
+        //   4. `mise install` (rest) — anything that compiles via cargo
         //      (notably cargo:tauri-cli) now uses the x86_64 toolchain and
         //      links cleanly with Hostarm64\x64\link.exe.
         //
@@ -201,12 +221,16 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         // run under Windows ARM64's native x64 emulation. The .msi/.exe
         // produced are x86_64 — what most Windows users actually ship.
         let switch_rustup = r#"powershell -NoProfile -Command "$rustup = (& mise where rust 2>$null) + '\\rustup.exe'; if (Test-Path $rustup) { & $rustup set default-host x86_64-pc-windows-msvc; & $rustup default --force-non-host stable-x86_64-pc-windows-msvc }""#;
+        let install_sccache = format!(
+            "{mise} use --global \"cargo:sccache@latest\" 2>nul || echo (sccache install best-effort)"
+        );
         format!(
-            r#"{mkdir_log} & cd /d "{vm_project_dir}" && set MISE_CARGO_BINSTALL=true && ({win_msvc_x64} && {mise} trust --yes && {mise} install rust && {switch_rustup} && {mise} install) >> "{log_path_h}" 2>&1"#
+            r#"{mkdir_log} & cd /d "{vm_project_dir}" && set MISE_CARGO_BINSTALL=true && set CARGO_INCREMENTAL=0 && ({win_msvc_x64} && {mise} trust --yes && {mise} install rust && {switch_rustup} && {install_sccache} && {mise} install) >> "{log_path_h}" 2>&1"#
         )
     } else {
+        let install_sccache = format!("{mise} use --global \"cargo:sccache@latest\" 2>/dev/null || true");
         format!(
-            r#"{mkdir_log} && {linux_tee}cd "{vm_project_dir}" && export MISE_CARGO_BINSTALL=true && {mise} trust --yes && {mise} install"#
+            r#"{mkdir_log} && {linux_tee}cd "{vm_project_dir}" && export MISE_CARGO_BINSTALL=true CARGO_INCREMENTAL=0 && {mise} trust --yes && {install_sccache} && {mise} install"#
         )
     };
     let code = ssh::exec_streaming(profile, &install_cmd)?;
@@ -287,14 +311,19 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         //    For Linux x86_64 cross-compile, point cargo at the multiarch
         //    cross-linker (gcc-x86-64-linux-gnu) and pass PKG_CONFIG_PATH so
         //    pkg-config picks up :amd64 system libs.
+        //    RUSTC_WRAPPER=sccache enables cross-project artifact caching.
+        //    Best-effort — if sccache isn't installed we fall back to plain
+        //    cargo (the wrapper env var is set unconditionally; cargo just
+        //    fails to find sccache and continues without it... actually it
+        //    errors, so we conditionally set it only if sccache is on PATH).
         let build_cmd = if profile.os == GuestOs::Windows {
             format!(
-                r#"cd /d "{vm_project_dir}" && ({win_msvc_x64} && {mise} exec -- cargo tauri build --target {triple}) >> "{log_path_h}" 2>&1"#
+                r#"cd /d "{vm_project_dir}" && ({win_msvc_x64} && for /f "delims=" %S in ('where sccache 2^>nul') do @set RUSTC_WRAPPER=%S && {mise} exec -- cargo tauri build --target {triple}) >> "{log_path_h}" 2>&1"#
             )
         } else {
             let linux_cross_env = linux_cross_env_for(triple);
             format!(
-                r#"{linux_tee}cd "{vm_project_dir}" && {linux_cross_env}{mise} exec -- cargo tauri build --target {triple}"#
+                r#"{linux_tee}cd "{vm_project_dir}" && export RUSTC_WRAPPER="$(command -v sccache 2>/dev/null)" && {linux_cross_env}{mise} exec -- cargo tauri build --target {triple}"#
             )
         };
         let t_build = Instant::now();
