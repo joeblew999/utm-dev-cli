@@ -54,15 +54,20 @@ fn linux(session: &ssh2::Session, profile: &VmProfile) -> Result<()> {
         "dpkg -s libwebkit2gtk-4.1-dev 2>/dev/null | grep -c 'ok installed'"
     ).unwrap_or_default();
     if webkit.trim() != "1" {
-        // xvfb-run: lets us start the built GTK app headlessly later (vm run)
-        // to verify it boots without a display. ~5 MB.
+        // xvfb: virtual framebuffer X server for running GTK apps headlessly
+        // (vm run / vm screenshot). xvfb-run is the wrapper, Xvfb is the
+        // server we use directly (so we control the DISPLAY number).
+        // scrot: tiny screenshot tool — `vm screenshot` calls this to
+        // capture whatever's drawn on the vm-side display, then scp's the
+        // png back to the host.
         // xdg-utils: provides xdg-open, required by Tauri's AppImage bundler
         // (otherwise `cargo tauri build` fails on the appimage step).
         run_step(session, "install Tauri Linux deps",
             "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
              libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
              librsvg2-dev libssl-dev libxdo-dev patchelf wget file \
-             libsoup-3.0-dev libjavascriptcoregtk-4.1-dev xvfb xdg-utils")?;
+             libsoup-3.0-dev libjavascriptcoregtk-4.1-dev xvfb xdg-utils \
+             scrot")?;
     } else {
         println!("  ✓ Tauri deps already installed");
     }

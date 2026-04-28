@@ -40,6 +40,14 @@ pub enum VmCommands {
         #[arg(long)]
         bin: Option<String>,
     },
+    /// Capture the VM's display and pull a PNG back to the host.
+    /// Linux only for now (uses scrot against the xvfb display from `vm run`).
+    Screenshot {
+        #[arg(long, help = "VM profile name")]
+        name: String,
+        #[arg(long, default_value = "screenshot.png", help = "Local path for the .png")]
+        out: String,
+    },
     /// Run a command in a VM via SSH
     Exec {
         #[arg(long, help = "VM profile name")]
@@ -135,6 +143,7 @@ pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
         VmCommands::Ls                      => vm_ls(),
         VmCommands::Build { name, target, release } => vm_build(&name, target, release),
         VmCommands::Run { name, bin }       => vm_run(&name, bin.as_deref()),
+        VmCommands::Screenshot { name, out } => vm_screenshot(&name, &out),
         VmCommands::Delete { name }         => vm_delete(&name),
         VmCommands::Package { name }        => vm_package(&name),
         VmCommands::ResizeDisk { name, plus_gb } => vm_resize_disk(&name, plus_gb),
@@ -602,6 +611,41 @@ fn vm_ls() -> anyhow::Result<()> {
 
 // ── vm build ──────────────────────────────────────────────────────────────────
 
+// ── vm screenshot ────────────────────────────────────────────────────────────
+
+fn vm_screenshot(name: &str, out: &str) -> anyhow::Result<()> {
+    let profile = profiles::get(name)?;
+    if profile.os != profiles::GuestOs::Linux {
+        anyhow::bail!(
+            "vm screenshot is Linux-only for now. \
+             Windows VMs: connect via RDP at 127.0.0.1:{} (user vagrant / pass vagrant) \
+             for visual access; programmatic capture from a headless SSH session needs \
+             an active desktop session, which utm-dev doesn't currently provision.",
+            profile.rdp_port.unwrap_or(3389),
+        );
+    }
+    ssh::check(profile)?;
+    let session = ssh::connect(profile)?;
+
+    let remote = "/tmp/utm-dev-screenshot.png";
+    println!("→ Capturing display :99 on {name}...");
+    let (out_text, code) = ssh::exec_with_exit(
+        &session,
+        &format!("DISPLAY=:99 scrot --overwrite {remote} 2>&1 && ls -la {remote}"),
+    )?;
+    if code != 0 {
+        anyhow::bail!(
+            "screenshot failed (is `vm run` running with Xvfb on :99?):\n{out_text}"
+        );
+    }
+
+    let local = std::path::PathBuf::from(out);
+    println!("→ Pulling {} → {}", remote, local.display());
+    ssh::download(profile, remote, &local)?;
+    println!("✓ {}", local.display());
+    Ok(())
+}
+
 // ── vm run ────────────────────────────────────────────────────────────────────
 
 fn vm_run(name: &str, bin: Option<&str>) -> anyhow::Result<()> {
@@ -620,11 +664,16 @@ fn vm_run(name: &str, bin: Option<&str>) -> anyhow::Result<()> {
 
     let cmd = match profile.os {
         profiles::GuestOs::Linux => format!(
-            // xvfb-run gives the GUI app a virtual display so it boots
-            // headlessly; nohup detaches so the SSH channel can close.
+            // We start Xvfb directly (not xvfb-run) on a fixed DISPLAY=:99
+            // so `vm screenshot` can target the same display reliably.
+            // pkill clears any stale Xvfb/app from a prior run; nohup
+            // detaches the app so the SSH channel can close.
             r#"mkdir -p ~/.utm-dev-run && \
-               nohup xvfb-run -a "{bin}" > ~/.utm-dev-run/run.log 2>&1 & \
-               sleep 2 && echo "PID=$!" && jobs -p"#
+               pkill -f 'Xvfb :99' >/dev/null 2>&1 || true && \
+               (Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 &) && \
+               sleep 1 && \
+               DISPLAY=:99 nohup "{bin}" > ~/.utm-dev-run/run.log 2>&1 & \
+               sleep 2 && echo "PID=$!""#
         ),
         profiles::GuestOs::Windows => format!(
             // Start-Process detaches; redirect both streams to the run log.
