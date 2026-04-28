@@ -3,10 +3,19 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 use crate::cli::BuildTarget;
 use super::profiles::{GuestOs, VmProfile};
 use super::ssh;
+
+/// Format an elapsed duration as `Hh Mm Ss` or `Mm Ss` or `Ss`.
+fn fmt_elapsed(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    if s >= 3600 { format!("{}h {}m {}s", s / 3600, (s % 3600) / 60, s % 60) }
+    else if s >= 60 { format!("{}m {}s", s / 60, s % 60) }
+    else { format!("{}s", s) }
+}
 
 /// Rust target triples for each (BuildTarget × GuestOs) combination.
 ///
@@ -29,6 +38,7 @@ fn triples(target: BuildTarget, os: GuestOs) -> Vec<&'static str> {
 }
 
 pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Result<()> {
+    let total_start = Instant::now();
     let project_name = project_dir
         .file_name()
         .context("project dir has no name")?
@@ -51,10 +61,13 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     // ── Connect ───────────────────────────────────────────────────────────────
 
     println!("→ Connecting to {} VM...", profile.name);
+    let t = Instant::now();
     let session = ssh::connect(profile)?;
+    println!("  ⌚ connect: {}", fmt_elapsed(t.elapsed()));
 
     // ── Sync code ─────────────────────────────────────────────────────────────
 
+    let t_sync = Instant::now();
     println!("→ Syncing {} to VM...", project_name);
     let tmp_tar = std::env::temp_dir().join(format!("utm-dev-sync-{}.tar.gz", std::process::id()));
 
@@ -122,7 +135,7 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         )?;
         if code != 0 { bail!("untar failed on VM:\n{out}"); }
     }
-    println!("✓ Code synced");
+    println!("✓ Code synced  ⌚ sync: {}", fmt_elapsed(t_sync.elapsed()));
 
     // ── Install tools ─────────────────────────────────────────────────────────
 
@@ -156,6 +169,7 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     let vsdevcmd = r#"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"#;
     let win_msvc_x64 = format!(r#"call "{vsdevcmd}" -arch=amd64 -host_arch=arm64 -no_logo"#);
 
+    let t_install = Instant::now();
     println!("→ Running mise install in VM (persistent log at {log_path_h})...");
     let install_cmd = if profile.os == GuestOs::Windows {
         // Two-phase mise install on ARM64 Windows:
@@ -183,7 +197,7 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     };
     let code = ssh::exec_streaming(profile, &install_cmd)?;
     if code != 0 { bail!("mise install failed inside VM (exit {code}) — see: utm-dev vm logs --name {}", profile.name); }
-    println!("✓ Tools installed");
+    println!("✓ Tools installed  ⌚ mise install: {}", fmt_elapsed(t_install.elapsed()));
 
     // Linux x86_64 cross-compile prep: ensure multiarch + amd64 system libs.
     // No-op on Windows or when only building native ARM64 on Linux.
@@ -227,6 +241,7 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     );
 
     for triple in &triples {
+        let t_target = Instant::now();
         println!("\n── Target: {triple} ──");
 
         // 1. rustup target add (idempotent — no-op if already installed).
@@ -262,6 +277,7 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
                 r#"{linux_tee}cd "{vm_project_dir}" && {linux_cross_env}{mise} exec -- cargo tauri build --target {triple}"#
             )
         };
+        let t_build = Instant::now();
         let code = ssh::exec_streaming(profile, &build_cmd)?;
         if code != 0 {
             bail!(
@@ -269,9 +285,10 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
                 profile.name
             );
         }
-        println!("✓ Build complete: {triple}");
+        println!("✓ Build complete: {triple}  ⌚ cargo tauri build: {}", fmt_elapsed(t_build.elapsed()));
 
         // 3. Pull this triple's bundle into .build/{platform}/{arch}/
+        let t_pull = Instant::now();
         let arch_label = arch_label_for(triple);
         let arch_dir = artifacts_dir.join(arch_label);
         std::fs::create_dir_all(&arch_dir)?;
@@ -329,8 +346,13 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
                 println!("  {} ({:.1} MB)", path.display(), size as f64 / 1_048_576.0);
             }
         }
+        println!("  ⌚ pull+extract: {} | target total: {}",
+            fmt_elapsed(t_pull.elapsed()),
+            fmt_elapsed(t_target.elapsed()),
+        );
     }
 
+    println!("\n══ Done. Total: {} ══", fmt_elapsed(total_start.elapsed()));
     Ok(())
 }
 
