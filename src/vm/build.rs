@@ -126,10 +126,18 @@ pub fn run(profile: &VmProfile, project_dir: &Path) -> Result<()> {
     };
     let linux_tee = "exec > >(tee -a ~/.utm-dev-build/build.log) 2>&1; ";
 
+    // On Windows, source VsDevCmd.bat to put link.exe + MSVC headers/libs
+    // on PATH/INCLUDE/LIB. cargo's vswhere-based detection isn't reliable
+    // on Vagrant's utm/windows-11 box (vswhere returns empty), so we wire
+    // the env in directly. -arch=arm64 -host_arch=arm64 because the VM is
+    // ARM64 building native targets.
+    let vsdevcmd = r#"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"#;
+    let win_msvc = format!(r#"call "{vsdevcmd}" -arch=arm64 -host_arch=arm64 -no_logo"#);
+
     println!("→ Running mise install in VM (persistent log at {log_path_h})...");
     let install_cmd = if profile.os == GuestOs::Windows {
         format!(
-            r#"{mkdir_log} & cd /d "{vm_project_dir}" && {mise} trust --yes >> "{log_path_h}" 2>&1 && {mise} install >> "{log_path_h}" 2>&1"#
+            r#"{mkdir_log} & cd /d "{vm_project_dir}" && ({win_msvc} && {mise} trust --yes && {mise} install) >> "{log_path_h}" 2>&1"#
         )
     } else {
         format!(r#"{mkdir_log} && {linux_tee}cd "{vm_project_dir}" && {mise} trust --yes && {mise} install"#)
@@ -145,7 +153,7 @@ pub fn run(profile: &VmProfile, project_dir: &Path) -> Result<()> {
 
     let build_cmd = if profile.os == GuestOs::Windows {
         format!(
-            r#"cd /d "{vm_project_dir}" && {mise} run build >> "{log_path_h}" 2>&1"#
+            r#"cd /d "{vm_project_dir}" && ({win_msvc} && {mise} run build) >> "{log_path_h}" 2>&1"#
         )
     } else {
         format!(r#"{linux_tee}cd "{vm_project_dir}" && {mise} run build"#)
