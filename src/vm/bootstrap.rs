@@ -87,6 +87,36 @@ fn linux(session: &ssh2::Session, profile: &VmProfile) -> Result<()> {
     // (Rust is installed by the project's mise.toml at vm build time, not
     // here — see AGENTS.md "Source-of-truth invariant for VM bootstrap".)
 
+    // Step 3b: cargo-binstall + mise's cargo_binstall setting.
+    // mirrors what the Windows bootstrap (step 7a/7b) does — installs the
+    // cargo-binstall binary directly (no compile) and persists the mise
+    // setting so cargo: tools fetch prebuilt binaries from GitHub releases
+    // instead of compiling from source.
+    let binstall_present = ssh::exec(session,
+        "[ -x \"$HOME/.cargo/bin/cargo-binstall\" ] && echo present || echo missing"
+    ).unwrap_or_default();
+    if !binstall_present.contains("present") {
+        let arch = ssh::exec(session, "uname -m").unwrap_or_default();
+        let target = if arch.trim() == "aarch64" {
+            "aarch64-unknown-linux-musl"
+        } else {
+            "x86_64-unknown-linux-musl"
+        };
+        let url = format!(
+            "https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-{target}.tgz"
+        );
+        run_step(session, "install cargo-binstall (binstall fast-path)",
+            &format!("mkdir -p ~/.cargo/bin && curl -sSfL {url} | tar -xz -C ~/.cargo/bin && chmod +x ~/.cargo/bin/cargo-binstall"))?;
+    } else {
+        println!("  ✓ cargo-binstall already installed");
+    }
+    // mise config: cargo_binstall = true (idempotent).
+    run_step(session, "configure mise cargo_binstall = true",
+        "mkdir -p ~/.config/mise && \
+         touch ~/.config/mise/config.toml && \
+         (grep -q 'cargo_binstall' ~/.config/mise/config.toml || \
+          printf '\\n[settings]\\ncargo_binstall = true\\n' >> ~/.config/mise/config.toml)")?;
+
     // Step 4: linux-dev extras (Debian 12 with GNOME).
     // Marker is fonts-noto-color-emoji because xdg-utils is already
     // installed for ALL Linux profiles by step 2.
