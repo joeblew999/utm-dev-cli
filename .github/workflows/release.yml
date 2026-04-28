@@ -1,0 +1,49 @@
+name: release
+
+# On `git push --tags vX.Y.Z`, build a macOS arm64 binary and attach it to
+# the GitHub release. Lets devs install via mise:
+#
+#   mise use --global "ubi:joeblew999/utm-dev-cli@latest"
+#
+# (ubi looks for the asset whose filename contains <target-triple> matching
+# the host. The tarball naming below — utm-dev-<version>-aarch64-apple-darwin.tar.gz
+# — is what ubi expects.)
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create releases + upload assets
+
+jobs:
+  build-macos-arm64:
+    runs-on: macos-14   # macos-14 = Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          name="utm-dev-${version}-aarch64-apple-darwin"
+          mkdir -p dist
+          tar czf "dist/${name}.tar.gz" -C target/release utm-dev
+          (cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/${{ steps.package.outputs.name }}.tar.gz
+            dist/${{ steps.package.outputs.name }}.tar.gz.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true

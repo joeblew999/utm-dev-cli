@@ -473,7 +473,7 @@ fn vm_doctor(name: &str) -> anyhow::Result<()> {
             ("WebView2 Runtime",
              r#"powershell -NoProfile -Command "if (winget list --id Microsoft.EdgeWebView2Runtime --accept-source-agreements 2>$null | Select-String 'EdgeWebView2') { 'ok' } else { 'MISSING' }""#),
             ("rustup default-host = x86_64",
-             r#"powershell -NoProfile -Command "& (mise where rust 2>$null) + '\\rustup.exe' show 2>$null | Select-String 'Default host:.*x86_64'""#),
+             r#"powershell -NoProfile -Command "$r = (mise where rust 2>$null); if ($r) { & ($r + '\\rustup.exe') show 2>$null | Select-String 'Default host:.*x86_64' | ForEach-Object { 'ok' } } else { 'MISSING' }""#),
         ],
     };
 

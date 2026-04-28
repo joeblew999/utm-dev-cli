@@ -4,6 +4,14 @@ Cross-platform Tauri builds on Apple Silicon. Spins up UTM VMs and ships you `.m
 
 ## Install
 
+Via mise (recommended once a release is tagged — pre-built mac-arm64 binary):
+
+```sh
+mise use --global "ubi:joeblew999/utm-dev-cli@latest"
+```
+
+Or from source (always works, ~30s compile):
+
 ```sh
 cargo install --git https://github.com/joeblew999/utm-dev-cli
 ```
