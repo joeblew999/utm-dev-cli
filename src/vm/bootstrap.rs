@@ -285,16 +285,26 @@ $p.ExitCode | Out-File 'C:\vs-exit.txt'
         println!("  ✓ VS Build Tools already installed (ARM64 toolchain present)");
     }
 
-    // Step 5: WebView2 Runtime (required by Tauri)
-    let wv2 = w.run_ps(
-        "winget list --id Microsoft.EdgeWebView2Runtime --accept-source-agreements 2>$null | Select-String 'EdgeWebView2'",
-    )?;
-    if wv2.stdout.trim().is_empty() {
-        println!("  Installing WebView2 Runtime...");
-        w.run_elevated(
-            "winget install --id Microsoft.EdgeWebView2Runtime --accept-source-agreements --accept-package-agreements --silent",
-            120,
-        )?;
+    // Step 5: WebView2 Runtime (required by Tauri at runtime).
+    //
+    // We tried `winget install --id Microsoft.EdgeWebView2Runtime` first —
+    // it consistently failed on fresh Vagrant Windows boxes ("No installed
+    // package found matching input criteria") because winget's Store source
+    // isn't always primed. The Evergreen Bootstrapper from
+    // https://go.microsoft.com/fwlink/p/?LinkId=2124703 is the supported
+    // headless install path Microsoft documents — small (~150 KB) and works
+    // on minimal Windows.
+    let wv2_path = r"C:\Program Files (x86)\Microsoft\EdgeWebView";
+    let wv2_check = w.run_ps(&format!(
+        "if (Test-Path '{wv2_path}') {{ 'installed' }} else {{ 'missing' }}"
+    ))?;
+    if wv2_check.stdout.trim() != "installed" {
+        println!("  Installing WebView2 Runtime (Evergreen Bootstrapper, ~150 KB)...");
+        w.run_ps(r#"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile 'C:\webview2_setup.exe' -UseBasicParsing
+Start-Process 'C:\webview2_setup.exe' -ArgumentList '/silent','/install' -Wait -NoNewWindow
+"#)?;
         println!("  ✓ WebView2 Runtime installed");
     } else {
         println!("  ✓ WebView2 Runtime already installed");
