@@ -334,6 +334,49 @@ Start-Process 'C:\webview2_setup.exe' -ArgumentList '/silent','/install' -Wait -
         println!("  ✓ mise already installed");
     }
 
+    // Step 7a: install cargo-binstall directly so mise's cargo backend
+    // can use it (with MISE_CARGO_BINSTALL=true) to fetch prebuilt
+    // tauri-cli + similar from GitHub Releases instead of compiling
+    // from source. Direct .exe download — bypassing `cargo install
+    // cargo-binstall` (which would itself compile from source ~5 min,
+    // defeating the purpose).
+    //
+    // Asset: cargo-binstall-x86_64-pc-windows-msvc.zip (we run x86_64
+    // binaries on this ARM64 VM via emulation, since rustup is
+    // configured for x86_64-host already).
+    w.run_ps(r#"
+$dest = "$env:USERPROFILE\.cargo\bin"
+if (-not (Test-Path "$dest\cargo-binstall.exe")) {
+    if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest | Out-Null }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $zip = "$env:TEMP\cargo-binstall.zip"
+    Invoke-WebRequest -Uri 'https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-pc-windows-msvc.zip' -OutFile $zip -UseBasicParsing
+    Expand-Archive -Force $zip $dest
+    Remove-Item $zip -Force -ErrorAction SilentlyContinue
+}
+# Ensure ~/.cargo/bin is on PATH for future shell sessions.
+$path = [Environment]::GetEnvironmentVariable('PATH','User')
+if ($path -notmatch [regex]::Escape($dest)) {
+    [Environment]::SetEnvironmentVariable('PATH', $path + ';' + $dest, 'User')
+}
+"#)?;
+    println!("  ✓ cargo-binstall installed (mise binstall fast-path enabled)");
+
+    // Step 7b: persist mise's `cargo_binstall = true` setting in the user
+    // mise config. Belt and braces alongside MISE_CARGO_BINSTALL env var
+    // — env vars are scoped to a process, settings file is permanent.
+    w.run_ps(r#"
+$cfg = "$env:USERPROFILE\AppData\Roaming\mise\config.toml"
+$dir = Split-Path $cfg
+if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+if (-not (Test-Path $cfg)) {
+    Set-Content $cfg "[settings]`ncargo_binstall = true`n" -Encoding UTF8
+} elseif ((Get-Content $cfg -Raw) -notmatch 'cargo_binstall') {
+    Add-Content $cfg "`n[settings]`ncargo_binstall = true`n" -Encoding UTF8
+}
+"#)?;
+    println!("  ✓ mise config: cargo_binstall = true");
+
     // Step 7: switch rustup default-host to x86_64.
     //
     // VS Build Tools on ARM64 Windows hosts ships only Hostarm64\x64 and
