@@ -765,18 +765,33 @@ fn vm_run(name: &str, bin: Option<&str>) -> anyhow::Result<()> {
 
     println!("→ Launching {bin} in {name} (output → ~/.utm-dev-run/run.log)...");
 
+    // Derive bin basename for `pkill <name>` — pkill -f matches the FULL
+    // command line including our own shell's argv, so `pkill -f Xvfb`
+    // kills the shell that's running pkill, severing the SSH connection
+    // (exit 255). pkill by command name (no -f) matches /proc/N/comm only,
+    // safe.
+    let bin_name = std::path::Path::new(bin)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(bin);
+
     let cmd = match profile.os {
         profiles::GuestOs::Linux => format!(
-            // We start Xvfb directly (not xvfb-run) on a fixed DISPLAY=:99
-            // so `vm screenshot` can target the same display reliably.
-            // pkill clears any stale Xvfb/app from a prior run; nohup
-            // detaches the app so the SSH channel can close.
-            r#"mkdir -p ~/.utm-dev-run && \
-               pkill -f 'Xvfb :99' >/dev/null 2>&1 || true && \
-               (Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 &) && \
-               sleep 1 && \
-               DISPLAY=:99 nohup "{bin}" > ~/.utm-dev-run/run.log 2>&1 & \
-               sleep 2 && echo "PID=$!""#
+            // We start Xvfb on a fixed DISPLAY=:99, then a tiny WM
+            // (openbox) so windows actually get mapped, then the app.
+            // Without a WM, bare Xvfb produces a black screenshot —
+            // GTK windows open but aren't composited/mapped.
+            //
+            // setsid -f detaches from the SSH session's controlling terminal
+            // so SIGHUP doesn't kill the children. We invoke this command
+            // via `ssh` (no -tt) so the channel closes cleanly without
+            // delivering signals to the detached descendants.
+            //
+            // pkill <name> (NOT -f) — `pkill -f` matches the FULL command
+            // line including our own shell's argv, so `pkill -f Xvfb` kills
+            // the shell itself (exit 255, SSH dies). Plain pkill matches
+            // /proc/N/comm only, which is just the basename.
+            "mkdir -p ~/.utm-dev-run; pkill Xvfb 2>/dev/null; pkill openbox 2>/dev/null; pkill {bin_name} 2>/dev/null; sleep 1; setsid -f Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >~/.utm-dev-run/xvfb.log 2>&1; sleep 1; DISPLAY=:99 setsid -f openbox --replace >~/.utm-dev-run/openbox.log 2>&1 || true; sleep 1; DISPLAY=:99 setsid -f '{bin}' >~/.utm-dev-run/run.log 2>&1; sleep 3; pgrep Xvfb >/dev/null && echo 'Xvfb running' || echo 'Xvfb DEAD'; pgrep {bin_name} >/dev/null && echo 'app running' || echo 'app DEAD — see ~/.utm-dev-run/run.log'; true"
         ),
         profiles::GuestOs::Windows => format!(
             // Start-Process detaches; redirect both streams to the run log.
@@ -790,11 +805,32 @@ fn vm_run(name: &str, bin: Option<&str>) -> anyhow::Result<()> {
         ),
     };
 
-    let (out, code) = ssh::exec_with_exit(&session, &cmd)?;
-    if code != 0 {
-        anyhow::bail!("Failed to launch {bin}:\n{out}");
+    // Bypass exec_streaming — it injects -tt on Linux which forces a pty;
+    // pty session-close sends SIGHUP to backgrounded children even with
+    // setsid+nohup, killing our Xvfb+app. We need *no* pty so the SSH
+    // channel closes cleanly without disturbing detached processes.
+    // libssh2's exec_with_exit also doesn't work here — it sends a kill
+    // signal to the channel's pgid on close. So: invoke ssh directly,
+    // no -tt, no -t.
+    let target = format!("{}@localhost", profile.user);
+    let port_str = profile.ssh_port.to_string();
+    let status = std::process::Command::new("ssh")
+        .args([
+            "-p", &port_str,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-o", "BatchMode=yes",
+        ])
+        .arg(&target)
+        .arg(&cmd)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!(
+            "Failed to launch {bin} (exit {}). Check ~/.utm-dev-run/run.log on the VM",
+            status.code().unwrap_or(-1)
+        );
     }
-    println!("{out}");
     println!("✓ Launched. Tail output:  utm-dev vm logs --name {name} --kind run --follow");
     Ok(())
 }
