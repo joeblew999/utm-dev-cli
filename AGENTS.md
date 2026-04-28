@@ -81,11 +81,8 @@ Bootstrap installs the host's pubkey into both Linux (`~/.ssh/authorized_keys`) 
 
 `tar` on macOS emits `._*` HFS metadata stubs that aren't valid UTF-8. Tauri's build script reads everything in `src-tauri/capabilities/` and crashes on them. `build.rs` excludes `._*` and sets `COPYFILE_DISABLE=1` when archiving.
 
-## Future: vm run (launch + observe built app)
+## vm run + observability
 
-Building is half the story — to verify the app actually starts, we need a way to launch the bundled binary inside the VM and observe startup.
+`vm run --name X --bin <path>` launches a built binary inside the VM and captures stdout/stderr to `~/.utm-dev-run/run.log` (Linux: via `xvfb-run`; Windows: via `Start-Process` detached). Tail with `vm logs --kind run --follow`.
 
-- **Headless:** Linux `xvfb-run` (already in bootstrap); Windows scheduled task + tail a log file.
-- **Out-of-band (preferred):** Joe's Tauri apps ship with a custom logger that streams events to a Cloudflare endpoint. `vm run --name X --bin <path>` would launch the binary and rely on the in-app logger for observability — Claude/user reads the CF tail URL to confirm clean startup.
-
-Status: not yet implemented. Both `vm build` end-to-ends must validate first.
+For richer observability, apps can embed a Cloudflare-Worker-streaming logger that publishes startup events out-of-band. utm-dev stays unaware of that logger — it's the app's concern. See [`docs/adr-001-vm-run-observability.md`](docs/adr-001-vm-run-observability.md) for the rationale and integration sketch.
