@@ -352,9 +352,13 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
                 &format!(r#"cd "{bundle_path}" && tar -czf ~/artifacts.tar.gz ."#),
             )?
         } else {
+            // `cd /d` to switch drives — without /d, cd silently no-ops if
+            // bundle_path is on a different drive than the cwd, which it is
+            // when CARGO_TARGET_DIR=D:\target. tar then archives . (=cwd =
+            // probably home dir) and produces an empty/wrong tarball.
             ssh::exec_with_exit(
                 &session,
-                &format!(r#"cd "{bundle_path}" && tar -czf "%USERPROFILE%\artifacts.tar.gz" ."#),
+                &format!(r#"cd /d "{bundle_path}" && tar -czf "%USERPROFILE%\artifacts.tar.gz" ."#),
             )?
         };
         if code != 0 { bail!("Failed to archive artifacts on VM ({triple}):\n{out}"); }
