@@ -41,12 +41,21 @@ This is why a project consuming utm-dev MUST have `[tools] rust = "..."` (and `c
 
 ## Recently resolved
 
-- **Cross-compile x86_64 on Windows from ARM64 VM** — `--target x86-64` ships clean (commit 1954cde + 92b3f3c).
-- **Linux x86_64 cross-compile** — multiarch + cross-linker wired (this commit).
-- **`vm run` scaffold** — launch + log-capture on both OSes (this commit).
-- **`vm restart`, `vm package` hint, setup error message** — small ergonomic fixes (commit 92b3f3c).
-- **`utm-dev init` Android-heavy default** — split into `init` (minimal: rust/tauri-cli/bun) and `init --android` (full block) — this commit.
-- **VS Build Tools missing ARM64 component, polling hang, two-phase mise install, CARGO_TARGET_DIR robustness** — all in earlier commits. See git log for details.
-- **Dead code cleanup** — removed `_hush_unused`, `find_vm_by_uuid`, `vm_home`, `path_sep`, `DEFAULT_VM`, `winrm::run_cmd`, `BootstrapMode::None`, unused `disk_gib` field, panicking `Commands::Icon` stub.
+- **Pre-baked box pipeline** — `prebaked_url: Option<&str>` on VmProfile + `download_prebaked` resume-aware fetcher. Onboarding goes from ~30 min bootstrap to ~5 min download. See [docs/box-publishing.md](docs/box-publishing.md).
+- **`MISE_CARGO_BINSTALL=true`** — drops the per-project tauri-cli install from a 25-min compile to a ~30-sec download via cargo-binstall (mise auto-bootstraps it).
+- **`vm doctor`** — Linux + Windows health checks (mise, build tools, cross-toolchain, WebView2, rustup default-host). Emits ⚠ for known-blocked items (BLOCKED_BY_MS) and exits 0 if only those fail; ✗ + exit 1 for actionable failures.
+- **`vm logs --tail N` / `--errors`** — fast error discovery on failed builds.
+- **Auto-error-dump on `vm build` failure** — bail prints the error stanza tail before the exit; no need to run `vm logs` after.
+- **`vm build` mise.toml pre-flight** — bails in 50 ms if rust + cargo:tauri-cli aren't pinned, instead of 25 min into a doomed VM run.
+- **Per-phase elapsed timing in `vm build`** — `⌚ sync: 3s | mise install: 8m | cargo tauri build: 22m | total: 30m`.
+- **GitHub Actions release workflow** — tag `vX.Y.Z` produces a mac-arm64 binary attached to the release; devs install via `mise use ubi:joeblew999/utm-dev-cli@latest`.
+- **Cross-compile x86_64 on Windows from ARM64 VM** — `--target x86-64` ships clean (commits 1954cde + 92b3f3c). Windows arm64 native blocked by MS — see #1.
+- **Linux x86_64 cross-compile** — Debian multiarch + gcc-x86-64-linux-gnu + linker env, on demand.
+- **`vm run` scaffold** — Linux xvfb-run, Windows Start-Process detached, output captured to `~/.utm-dev-run/run.log`.
+- **`vm restart`, `vm package` hint, setup error message** — small ergonomic fixes.
+- **`utm-dev init` Android-heavy default** — split into `init` (minimal) and `init --android` (full block).
+- **`winrm::run_elevated` polling hang** — sentinel-file completion detection added.
+- **CARGO_TARGET_DIR probe** — fenced `BEGIN_CTD/END_CTD` markers.
+- **WebView2 install via Evergreen Bootstrapper** — winget Microsoft.EdgeWebView2Runtime is unreliable on fresh Vagrant boxes; switched to MS's documented headless installer.
+- **Dead code cleanup** — removed `_hush_unused`, `find_vm_by_uuid`, `vm_home`, `path_sep`, `DEFAULT_VM`, `winrm::run_cmd`, `BootstrapMode::None`, unused `disk_gib`, panicking `Commands::Icon` stub.
 - **Linux bootstrap pre-installing Rust globally** — removed (per source-of-truth invariant). Step 5 dead-code marker swapped from `xdg-utils` to `fonts-noto-color-emoji`.
-- **Windows ARM64 native gap not declared blocked clearly** — now explicit in #1 above.
