@@ -100,39 +100,65 @@ fn download_box(profile: &VmProfile) -> Result<PathBuf> {
         .with_context(|| "cannot parse download URL from Vagrant Cloud response")?
         .to_string();
 
-    // Step 4: download with progress
+    // Step 4: download with progress (resumes if .partial exists)
     let is_windows = profile.os == super::profiles::GuestOs::Windows;
-    println!(
-        "→ Downloading box (~{}) — this takes a while...",
-        if is_windows { "6 GB" } else { "1-2 GB" }
-    );
+    let partial = dest.with_extension("box.partial");
+    let resume_from = std::fs::metadata(&partial).map(|m| m.len()).unwrap_or(0);
+
+    if resume_from > 0 {
+        println!(
+            "→ Resuming download from {:.2} GB...",
+            resume_from as f64 / 1_073_741_824.0
+        );
+    } else {
+        println!(
+            "→ Downloading box (~{}) — this takes a while...",
+            if is_windows { "6 GB" } else { "1-2 GB" }
+        );
+    }
 
     let stream_client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(3600))
         .build()?;
-    let mut resp = stream_client
-        .get(&box_url)
-        .send()
-        .with_context(|| format!("GET {box_url}"))?;
-    if !resp.status().is_success() {
-        bail!("Download failed: HTTP {}", resp.status());
+    let mut req = stream_client.get(&box_url);
+    if resume_from > 0 {
+        req = req.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
     }
+    let mut resp = req.send().with_context(|| format!("GET {box_url}"))?;
 
-    let total = resp.content_length().unwrap_or(0);
+    let status = resp.status();
+    let resumed = status == reqwest::StatusCode::PARTIAL_CONTENT;
+    if !status.is_success() {
+        bail!("Download failed: HTTP {status}");
+    }
+    if resume_from > 0 && !resumed {
+        // Server didn't honour Range — start over
+        println!("  (server doesn't support resume — starting from 0)");
+    }
+    let starting_offset = if resumed { resume_from } else { 0 };
+
+    let body_len = resp.content_length().unwrap_or(0);
+    let total = starting_offset + body_len;
     let pb = ProgressBar::new(total);
     pb.set_style(
         ProgressStyle::default_bar()
             .template(
                 "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] \
-                 {bytes}/{total_bytes} ({eta})",
+                 {bytes}/{total_bytes} ({bytes_per_sec}, eta {eta})",
             )
             .unwrap()
             .progress_chars("=>-"),
     );
+    pb.set_position(starting_offset);
+    pb.enable_steady_tick(Duration::from_secs(5));
 
-    let partial = dest.with_extension("box.partial");
-    let mut file =
-        std::fs::File::create(&partial).with_context(|| format!("creating {}", partial.display()))?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(!resumed)
+        .append(resumed)
+        .open(&partial)
+        .with_context(|| format!("opening {}", partial.display()))?;
 
     let mut buf = [0u8; 64 * 1024];
     loop {
@@ -170,12 +196,32 @@ fn extract_box(box_path: &Path, profile: &VmProfile) -> Result<PathBuf> {
     }
     std::fs::create_dir_all(&dest_dir)?;
 
-    println!("→ Extracting box...");
+    let compressed_size = std::fs::metadata(box_path)?.len();
+    println!(
+        "→ Extracting box ({:.1} GB compressed → ~{:.0} GB on disk)...",
+        compressed_size as f64 / 1_073_741_824.0,
+        compressed_size as f64 / 1_073_741_824.0 * 2.5,
+    );
+
+    let pb = ProgressBar::new(compressed_size);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] \
+                 {bytes}/{total_bytes} read ({bytes_per_sec})",
+            )
+            .unwrap()
+            .progress_chars("=>-"),
+    );
+    pb.enable_steady_tick(Duration::from_secs(5));
+
     let file = std::fs::File::open(box_path)
         .with_context(|| format!("opening {}", box_path.display()))?;
-    let gz = flate2::read::GzDecoder::new(file);
+    let tracked = pb.wrap_read(file);
+    let gz = flate2::read::GzDecoder::new(tracked);
     let mut archive = tar::Archive::new(gz);
     archive.unpack(&dest_dir).context("extracting box archive")?;
+    pb.finish_with_message("extracted");
 
     let bundle = find_utm_bundle(&dest_dir)?;
     println!("✓ Extracted: {}", bundle.display());

@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::cmd::{doctor, platform, vm};
+use crate::cmd::{clean, doctor, init, platform, vm};
 
 #[derive(Parser)]
 #[command(
@@ -67,9 +67,9 @@ pub fn run() -> anyhow::Result<()> {
     match cli.command {
         Commands::Doctor => doctor::run(),
         Commands::Setup => todo!("setup — port from utm-dev/.mise/tasks/setup.ts"),
-        Commands::Init => todo!("init — port from utm-dev/.mise/tasks/init.ts"),
+        Commands::Init => init::run(),
         Commands::Icon => todo!("icon — generate platform icons"),
-        Commands::Clean { deep } => todo!("clean disk (deep={deep})"),
+        Commands::Clean { deep } => clean::run(deep),
         Commands::Mac(cmd) => platform::run_mac(cmd),
         Commands::Ios(cmd) => platform::run_ios(cmd),
         Commands::Android(cmd) => platform::run_android(cmd),

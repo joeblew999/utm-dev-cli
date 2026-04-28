@@ -217,13 +217,20 @@ Start-ScheduledTask -TaskName 'BootstrapStep'
 ";
         self.run_ps(register)?;
 
-        let deadline = SystemTime::now() + Duration::from_secs(timeout_secs);
+        let started  = SystemTime::now();
+        let deadline = started + Duration::from_secs(timeout_secs);
         while SystemTime::now() < deadline {
-            std::thread::sleep(Duration::from_secs(10));
+            std::thread::sleep(Duration::from_secs(5));
+            let elapsed = SystemTime::now().duration_since(started).unwrap_or_default().as_secs();
+            print!("\r    ... [{:>4}s / {}s] still running", elapsed, timeout_secs);
+            let _ = std::io::Write::flush(&mut std::io::stdout());
             match self.run_ps(
                 "(Get-ScheduledTask -TaskName 'BootstrapStep' -ErrorAction SilentlyContinue).State",
             ) {
-                Ok(r) if r.stdout.trim() != "Running" => break,
+                Ok(r) if r.stdout.trim() != "Running" => {
+                    println!(); // newline after carriage-return progress
+                    break;
+                }
                 _ => {} // WinRM may drop during heavy I/O — keep polling
             }
         }
