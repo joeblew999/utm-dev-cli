@@ -22,6 +22,8 @@ This is why a project consuming utm-dev MUST have `[tools] rust = "..."` (and `c
 
 ## Brittle / edge cases
 
+5a. **`winrm::run_elevated` polling can hang after the install completes** — the loop watches `(Get-ScheduledTask -TaskName 'BootstrapStep').State` for ≠ "Running" and `_ => {}` swallows WinRM errors. Observed on the ARM64 Windows VM: VS Build Tools install completed (`C:\vs-exit.txt` written with exit code 0) but the loop kept printing "still running" for 10+ minutes after, until manually killed. Fix: also poll for a sentinel file written *after* the install finishes (e.g. `C:\bootstrap-step-done.txt` written by the script after `Out-File 'C:\vs-exit.txt'`); when it exists, break regardless of what `Get-ScheduledTask` reports. Belt-and-braces over the existing state check.
+
 6. **Linux bootstrap step 5 is dead code** — [src/vm/bootstrap.rs:96-105](src/vm/bootstrap.rs#L96-L105) gates `linux-dev` extras on `xdg-utils` not being installed, but step 2 already installs `xdg-utils` for **all** Linux profiles. The check always passes, step 5 never runs. Either swap the marker (e.g. `fonts-noto-color-emoji`) or merge into step 2 with a `linux-dev`-only guard.
 
 7. **CARGO_TARGET_DIR probe parsing is fragile** — [src/vm/build.rs](src/vm/build.rs) probes via `echo` and takes `lines().last()`. A login banner or stray output breaks bundle resolution. Better: parse a fenced marker (e.g. `echo BEGIN; echo $CARGO_TARGET_DIR; echo END`).
