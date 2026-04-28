@@ -2,6 +2,8 @@ use anyhow::{bail, Result};
 use clap::Subcommand;
 use std::process::Command;
 
+use crate::cli::BuildTarget;
+
 // Matches setup.ts constants
 const NDK_VERSION:   &str = "27.2.12479018";
 const JAVA_VERSION:  &str = "temurin-17.0.18+8";
@@ -40,6 +42,9 @@ pub enum AndroidCommands {
 pub enum WindowsCommands {
     /// Build Windows .msi/.exe in VM (auto-starts VM on first run)
     Build {
+        #[arg(long, value_enum, default_value_t = BuildTarget::Both,
+              help = "Architecture: arm64 | x86-64 | both")]
+        target: BuildTarget,
         #[arg(long, help = "Optimised release build")]
         release: bool,
     },
@@ -51,6 +56,9 @@ pub enum LinuxCommands {
     Dev,
     /// Build Linux .deb/.AppImage in VM (auto-starts VM on first run)
     Build {
+        #[arg(long, value_enum, default_value_t = BuildTarget::Arm64,
+              help = "Architecture: arm64 | x86-64 | both (x86-64 not yet supported on Linux)")]
+        target: BuildTarget,
         #[arg(long, help = "Optimised release build")]
         release: bool,
     },
@@ -89,9 +97,10 @@ pub fn run_android(cmd: AndroidCommands) -> Result<()> {
 
 pub fn run_windows(cmd: WindowsCommands) -> Result<()> {
     match cmd {
-        WindowsCommands::Build { release } => {
+        WindowsCommands::Build { target, release } => {
             super::vm::run(super::vm::VmCommands::Build {
-                name:    "windows-build".to_string(),
+                name: "windows-build".to_string(),
+                target,
                 release,
             })
         }
@@ -106,9 +115,10 @@ pub fn run_linux(cmd: LinuxCommands) -> Result<()> {
                 name: "linux-dev".to_string(),
             })
         }
-        LinuxCommands::Build { release } => {
+        LinuxCommands::Build { target, release } => {
             super::vm::run(super::vm::VmCommands::Build {
-                name:    "linux-build".to_string(),
+                name: "linux-build".to_string(),
+                target,
                 release,
             })
         }
@@ -121,8 +131,8 @@ pub fn run_all(cmd: AllCommands) -> Result<()> {
             println!("═══ Building all platforms ═══");
             let steps: &[(&str, fn() -> Result<()>)] = &[
                 ("mac",     || tauri(&["build"])),
-                ("windows", || super::vm::run(super::vm::VmCommands::Build { name: "windows-build".to_string(), release: true })),
-                ("linux",   || super::vm::run(super::vm::VmCommands::Build { name: "linux-build".to_string(),   release: true })),
+                ("windows", || super::vm::run(super::vm::VmCommands::Build { name: "windows-build".to_string(), target: BuildTarget::Both,  release: true })),
+                ("linux",   || super::vm::run(super::vm::VmCommands::Build { name: "linux-build".to_string(),   target: BuildTarget::Arm64, release: true })),
                 ("android", || tauri_android(&["android", "build"])),
                 ("ios",     || tauri(&["ios", "build"])),
             ];

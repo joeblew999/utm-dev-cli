@@ -1,6 +1,29 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::cmd::{clean, doctor, init, platform, setup, vm};
+
+/// Target architecture for VM builds.
+///
+/// `Both` produces native + cross artifacts. On Apple Silicon → Windows,
+/// MSVC cross-tools handle x86_64 from an ARM64 VM. On Linux, `X8664` and
+/// `Both` aren't yet supported (multi-arch system libs required for WebKit
+/// GTK) — use a Linux x86_64 host or wait for a follow-up.
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum BuildTarget {
+    /// Native ARM64 only
+    #[value(name = "arm64")]
+    Arm64,
+    /// x86_64 cross-compile (Windows: works; Linux: not yet supported)
+    #[value(name = "x86_64", alias = "x86-64", alias = "x64")]
+    X8664,
+    /// Both arm64 and x86_64
+    #[value(name = "both")]
+    Both,
+}
+
+impl Default for BuildTarget {
+    fn default() -> Self { BuildTarget::Both }
+}
 
 #[derive(Parser)]
 #[command(

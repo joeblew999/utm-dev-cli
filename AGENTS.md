@@ -3,211 +3,83 @@
 Rust CLI rewrite of [utm-dev](https://github.com/joeblew999/utm-dev) TypeScript tasks.
 Binary name: `utm-dev`. Published to crates.io so consuming repos install via `cargo:utm-dev`.
 
+User-facing docs live in [README.md](./README.md). This file is for AI assistants and contributors — it captures *non-obvious* invariants that aren't visible from reading the code.
+
 ## Golden rule: dovetail with UTM, don't fight it
 
-UTM manages VM display, drivers, storage, and hardware configuration. `utm-dev` only
-orchestrates **lifecycle** (start/stop), **networking** (port forwards via AppleScript),
-and **remote execution** (SSH). Never try to fix display issues, install guest OS drivers,
-or reconfigure hardware from code — those are UTM's job.
+UTM owns display, drivers, storage, and hardware config. `utm-dev` only orchestrates **lifecycle** (start/stop), **networking** (port forwards via AppleScript), and **remote execution** (SSH + WinRM). Never try to fix display issues, install guest drivers, or reconfigure hardware from code — that's UTM's job.
+
+## Use mise tasks, not raw cargo
+
+This repo uses `mise.toml` as the single source of truth for build/install/test:
+
+```sh
+mise run build      # cargo build
+mise run install    # cargo install --path .
+mise run test       # cargo test
+```
+
+Don't call cargo directly when a task exists. Add a task to `mise.toml` if one is missing.
+
+## Test repo for end-to-end
+
+A real Tauri starter at `~/workspace/go/src/github.com/joeblew999/utm-dev-demo` is the canonical fixture for validating `vm build` changes. Don't scaffold throwaway test projects.
 
 ## Box source
 
-Boxes come from the **`utm` Vagrant Cloud registry** — pre-built UTM VMs with VirtIO
-drivers, WinRM (Windows), and SSH already configured:
+Boxes come from the **`utm` Vagrant Cloud registry** — pre-built UTM VMs with VirtIO drivers, WinRM (Windows), and SSH already configured:
 
 ```
 https://app.vagrantup.com/utm/{box_name}                  (browse)
-https://api.cloud.hashicorp.com/vagrant/2022-09-30/registry/utm/box/{box_name}/versions  (latest version)
-https://api.cloud.hashicorp.com/vagrant/2022-09-30/registry/utm/box/{box_name}/version/{ver}/provider/utm/architecture/arm64/download  (download URL)
+{API}/box/{box_name}/versions                             (latest version)
+{API}/box/{box_name}/version/{ver}/provider/utm/architecture/arm64/download
 ```
 
-Box names: `windows-11`, `ubuntu-24.04`, `debian-12`
-Box format: `.tar.gz` (a renamed `.box`) containing a `.utm` bundle directory.
-Cache: `~/.cache/utm-dev/{box_name}_{version}_arm64.box`
+(`{API}` = `https://api.cloud.hashicorp.com/vagrant/2022-09-30/registry/utm`)
 
-## UTM AppleScript: correct import call
+Box names: `windows-11`, `ubuntu-24.04`, `debian-12`. Each is a `.tar.gz` (renamed `.box`) wrapping a `.utm` bundle. Cached at `~/.cache/utm-dev/{box}_{version}_arm64.box`.
 
-```applescript
-tell application "UTM" to import new virtual machine from POSIX file "/path/to/vm.utm"
-```
+## Imported-bundle quirk: rewrite plist Name before import
 
-NOT `open POSIX file` — that does something different. After import, snapshot UUIDs
-before/after to detect which UUID was just created (UTM doesn't return it directly).
+UTM imports use the bundle's `config.plist` `Name` field as the on-disk display name. Two profiles using the same box (e.g. `linux-test` + `linux-build` both on `ubuntu-24.04`) collide in `~/Library/Containers/com.utmapp.UTM/Data/Documents/`. `import.rs` copies the cached bundle, rewrites the plist Name to the **profile name**, then imports — so each profile lands as its own `.utm` bundle. After import, snapshot UTM's UUID list before/after to detect which UUID was just created (UTM doesn't return it directly).
 
-## Architecture
+## State: profile name vs UTM display name vs UUID
 
-```
-src/
-  main.rs             entry point
-  cli.rs              clap Commands enum
-  cmd/
-    doctor.rs   ✓     checks tool availability via which()
-    platform.rs       stubs — mac/ios/android/windows/linux/all
-    vm.rs       ✓     up / down / exec / adopt / ls implemented
-  vm/
-    mod.rs      ✓
-    profiles.rs ✓     5 static profiles (box names, ports, credentials)
-    state.rs    ✓     .mise/state/vm-{name}.json — uuid + display_name
-    utm.rs      ✓     ensure_utm, list_vms, start_vm, stop_vm, wait_for_boot,
-                      configure_network (AppleScript), configure_resources
-    ssh.rs      ✓     connect (agent → key files → password), exec, exec_with_exit,
-                      upload (SCP), check
-    import.rs   ✓     Vagrant Cloud API download, extract, import via AppleScript
-    bootstrap.rs ✓    Linux SSH bootstrap (apt + mise + Rust); Windows stub
-```
-
-## VM profiles
-
-| Profile | Box | OS | SSH | WinRM | RAM |
-|---|---|---|---|---|---|
-| windows-build | windows-11 | Windows ARM64 | 2222 | 5985 | 12288 MiB |
-| windows-test  | windows-11 | Windows ARM64 | 2322 | 6985 | 4096 MiB  |
-| linux-build   | ubuntu-24.04 | Linux ARM64 | 2422 | — | 4096 MiB |
-| linux-test    | ubuntu-24.04 | Linux ARM64 | 2522 | — | 2048 MiB |
-| linux-dev     | debian-12  | Linux ARM64 (GNOME) | 2622 | — | 6144 MiB |
-
-Credentials: `vagrant` / `vagrant` for all. Boxes pre-configure WinRM on Windows.
-
-## vm adopt — for existing non-Vagrant VMs
-
-If the user already has a UTM VM (e.g. `plat-windows`) that isn't from the Vagrant registry:
-
-```bash
-utm-dev vm adopt --name windows-build --utm-name plat-windows
-```
-
-This writes `.mise/state/vm-windows-build.json` and skips the download/import step.
-The user must have set up the VM in UTM themselves (VirtIO drivers, SSH, port forwards).
-
-**Black screen on non-Vagrant Windows VMs**: means VirtIO GPU driver is missing.
-Fix via UTM's GUI (attach VirtIO driver ISO from VM settings → Drives) — do NOT try
-to fix this from code.
-
-## vm up flow
-
-```
-ensure_utm()
-  → if no state: import::ensure_imported()  ← Vagrant Cloud download + AppleScript import
-  → configure_network() + configure_resources()
-  → start_vm(display_name)           ← uses state.display_name, NOT profile.box_name
-  → wait_for_boot()                  ← WinRM (Windows) or SSH (Linux)
-  → bootstrap::run()                 ← Linux: apt + mise + Rust; Windows: OpenSSH via WinRM
-  → state::save()
-```
+`.mise/state/vm-{profile}.json` stores the actual UTM `display_name` and `uuid`. Always use `state.display_name` (not `profile.box_name`) for UTM operations after import. UTM may rename bundles internally; the state file is the source of truth.
 
 ## SSH auth order
 
 1. SSH agent (macOS Keychain / ssh-agent)
 2. Key files: `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, `~/.ssh/id_ecdsa`
-3. Password from profile (fallback)
+3. Password from profile
 
-Windows VMs from the Vagrant registry have SSH pre-configured with the `vagrant` password.
+Bootstrap installs the host's pubkey into both Linux (`~/.ssh/authorized_keys`) and Windows (`~/.ssh/authorized_keys` **and** `C:\ProgramData\ssh\administrators_authorized_keys` — Windows OpenSSH's `Match Group administrators` redirects admin users to the latter).
 
-## Conventions
+## Streaming exec on Linux needs `-tt`
 
-- Return `anyhow::Result<()>` from all commands
-- Progress: `println!("→ ...")`, success: `println!("✓ ...")`, fatal: `anyhow::bail!(...)`
-- Unimplemented: `todo!("clear message")`
-- Never `unwrap()` in user-facing paths
-- State files use actual UTM display names — `state.display_name` may differ from `profile.box_name`
+`ssh::exec_streaming` injects `-tt` only on Linux — it forces a pseudo-TTY so cargo/mise stay line-buffered (without it, long compiles look frozen for 10+ min). Windows cmd.exe **breaks** with `-tt` (the session exits immediately returning 0), so Windows uses plain pipes and we redirect to a log file at the cmd level for visibility (`vm logs --name X --follow`).
 
-## Implementation status
+## Windows bootstrap landmines
 
-| Command | Status |
-|---|---|
-| `doctor` | ✓ |
-| `vm ls` | ✓ |
-| `vm adopt` | ✓ |
-| `vm up` | ✓ (import + bootstrap + idempotent re-runs) |
-| `vm down` | ✓ |
-| `vm exec` | ✓ |
-| `vm build` | ✓ (sync → build → pull artifacts) |
-| `vm delete` | ✓ (utmctl + AppleScript fallback) |
-| `vm package` | ✓ (export as Vagrant .box) |
-| `setup` / `init` | stub |
+- VS Build Tools `--includeRecommended` does **not** install the native ARM64 compiler. Must explicitly `--add Microsoft.VisualStudio.Component.VC.Tools.ARM64`. The vswhere check should require that component, not `VC.Tools.x86.x64`, otherwise old broken installs get skipped as "already installed" and the build then fails with no compiler for the host arch.
+- `vs_buildtools.exe` with `--add` modifies an existing install in place — so the same code path covers fresh-install and migration.
+- `LocalAccountTokenFilterPolicy = 1` is mandatory for WinRM with local admin accounts.
+- Long-running PS scripts go through `winrm::run_elevated` which writes to `C:\bootstrap-step.ps1` and runs as SYSTEM via a scheduled task — bypasses UAC and survives WinRM dropouts during heavy I/O.
 
-## vm build flow
+## Windows cmd.exe gotchas in build.rs
 
-```
-ssh::connect()            ← auto-starts VM if not reachable
-tar (exclude target/.git/node_modules) → SCP upload → untar on VM
-mise trust && mise install            ← idempotent tool install
-mise run build                        ← Tauri build
-tar artifacts on VM → SCP download → extract to .build/{platform}/
-```
+- `if not exist X CMD1 && CMD2` parses as `if not exist X (CMD1 && CMD2)` — on a re-run where X exists, **none** of the chain runs. Use unconditional `&` plus `mkdir 2>nul` to swallow the "exists" error.
+- libssh2 SCP doesn't translate `C:/...` paths into anything OpenSSH-SCP accepts. Use **relative** remote paths on Windows (lands in user's home directory); use absolute Unix paths on Linux.
 
-Artifacts land in `<project>/.build/windows/*.{msi,exe}` or `.build/linux/*.{deb,AppImage,rpm}`.
+## AppleDouble files break Tauri
 
-## WinRM bootstrap flow
-
-Implemented in `src/vm/winrm.rs` (pure Rust SOAP client, no pywinrm).
-Called from `bootstrap::run` for Windows VMs.
-
-```
-winrm.ping()                                    ← check WinRM reachable
-Add-WindowsCapability OpenSSH.Server (elevated) ← SYSTEM scheduled task
-Start-Service sshd / Set-Service Automatic
-Set administrators_authorized_keys              ← host public key
-Write minimal sshd_config
-LocalAccountTokenFilterPolicy = 1
-irm https://mise.run/install.ps1 | iex          ← mise
-```
-
-## Linux bootstrap (idempotent)
-
-```
-dpkg -s build-essential    → install if missing
-dpkg -s libwebkit2gtk-4.1-dev → Tauri deps if missing  
-mise --version             → install if missing
-rustc --version            → mise use rust@stable if missing
-linux-dev: xdg-utils + GNOME check
-```
-
-Both Linux and Windows bootstraps install the host's SSH public key into
-the VM (Linux: `~/.ssh/authorized_keys`; Windows: BOTH that path AND
-`C:\ProgramData\ssh\administrators_authorized_keys` because vagrant is an
-admin and Windows OpenSSH's `Match Group administrators` redirects admin
-users to the latter). Result: passwordless `ssh`, `scp`, and VS Code Remote
-SSH against the VMs out of the box.
-
-## Demo repo for end-to-end testing
-
-A real Tauri starter lives at:
-
-```
-~/workspace/go/src/github.com/joeblew999/utm-dev-demo
-```
-
-Scaffolded via `cargo create-tauri-app -y -t vanilla -m cargo`, with a
-`mise.toml` declaring `cargo:tauri-cli = "2"` and a `[tasks.build]` that
-runs `cargo tauri build`. Use this for full-pipeline validation:
-
-```bash
-cd ~/workspace/go/src/github.com/joeblew999/utm-dev-demo
-utm-dev vm build --name linux-build     # produces .deb/.AppImage in .build/linux/
-utm-dev vm build --name windows-build   # produces .msi/.exe in .build/windows/
-```
-
-When debugging build failures: outputs land in the demo's `.build/<platform>/`
-inside the project dir you ran `vm build` from (`current_dir()` at command
-start). Open the demo in VS Code and the artifacts appear in the same
-workspace.
+`tar` on macOS emits `._*` HFS metadata stubs that aren't valid UTF-8. Tauri's build script reads everything in `src-tauri/capabilities/` and crashes on them. `build.rs` excludes `._*` and sets `COPYFILE_DISABLE=1` when archiving.
 
 ## Future: vm run (launch + observe built app)
 
-Building is only half the story — to verify the app actually starts, we
-need a way to launch the bundled binary inside the VM and observe startup.
+Building is half the story — to verify the app actually starts, we need a way to launch the bundled binary inside the VM and observe startup.
 
-Headless approach:
-  - Linux: `xvfb-run` (virtual framebuffer; bootstrap needs `apt install xvfb`)
-  - Windows: scheduled task running as the user; tail log file via SSH
-
-Out-of-band approach (preferred when available):
-  Joe's Tauri apps ship with a custom logger that streams events to a
-  Cloudflare endpoint. `vm run` then doesn't need to capture the app's
-  stdout — the logger handles observability. Pattern:
-    1. `vm run --name X --bin <bundle-path>` launches the binary
-    2. App's in-process logger sends startup events to the user's CF tail
-    3. Claude/user reads the CF tail URL to confirm clean startup
+- **Headless:** Linux `xvfb-run` (already in bootstrap); Windows scheduled task + tail a log file.
+- **Out-of-band (preferred):** Joe's Tauri apps ship with a custom logger that streams events to a Cloudflare endpoint. `vm run --name X --bin <path>` would launch the binary and rely on the in-app logger for observability — Claude/user reads the CF tail URL to confirm clean startup.
 
 Status: not yet implemented. Both `vm build` end-to-ends must validate first.

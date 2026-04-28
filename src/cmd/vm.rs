@@ -1,5 +1,6 @@
 use clap::Subcommand;
 
+use crate::cli::BuildTarget;
 use crate::vm::{bootstrap, build, import, profiles, ssh, state, utm};
 
 #[derive(Subcommand)]
@@ -18,6 +19,9 @@ pub enum VmCommands {
     Build {
         #[arg(long, help = "VM profile name")]
         name: String,
+        #[arg(long, value_enum, default_value_t = BuildTarget::Both,
+              help = "Architecture: arm64 | x86-64 | both")]
+        target: BuildTarget,
         #[arg(long, help = "Optimised release build")]
         release: bool,
     },
@@ -100,7 +104,7 @@ pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
         VmCommands::Pull { name, from, to } => vm_pull(&name, &from, &to),
         VmCommands::Adopt { name, utm_name } => vm_adopt(&name, &utm_name),
         VmCommands::Ls                      => vm_ls(),
-        VmCommands::Build { name, release } => vm_build(&name, release),
+        VmCommands::Build { name, target, release } => vm_build(&name, target, release),
         VmCommands::Delete { name }         => vm_delete(&name),
         VmCommands::Package { name }        => vm_package(&name),
         VmCommands::ResizeDisk { name, plus_gb } => vm_resize_disk(&name, plus_gb),
@@ -453,8 +457,20 @@ fn vm_ls() -> anyhow::Result<()> {
 
 // ── vm build ──────────────────────────────────────────────────────────────────
 
-fn vm_build(name: &str, _release: bool) -> anyhow::Result<()> {
+fn vm_build(name: &str, target: BuildTarget, _release: bool) -> anyhow::Result<()> {
     let profile = profiles::get(name)?;
+
+    // Linux x86_64 cross-compile from ARM64 needs multiarch system libs
+    // (libwebkit2gtk:amd64 etc.) which we don't yet provision. Fail loudly
+    // rather than silently produce broken artifacts.
+    if profile.os == profiles::GuestOs::Linux
+        && (target == BuildTarget::X8664 || target == BuildTarget::Both)
+    {
+        anyhow::bail!(
+            "Linux x86_64 cross-compile from ARM64 isn't yet supported \
+             (multi-arch system libs required). Use --target arm64."
+        );
+    }
 
     // Auto-start VM if SSH not reachable
     if ssh::connect(profile).is_err() {
@@ -465,7 +481,7 @@ fn vm_build(name: &str, _release: bool) -> anyhow::Result<()> {
     let project_dir = std::env::current_dir()
         .map_err(|e| anyhow::anyhow!("cannot determine current directory: {e}"))?;
 
-    build::run(profile, &project_dir)
+    build::run(profile, &project_dir, target)
 }
 
 // ── vm delete ─────────────────────────────────────────────────────────────────
