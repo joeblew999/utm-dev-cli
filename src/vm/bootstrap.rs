@@ -24,6 +24,10 @@ pub fn run(profile: &VmProfile) -> Result<()> {
 fn linux(session: &ssh2::Session, profile: &VmProfile) -> Result<()> {
     println!("→ Bootstrapping Linux VM (mode: {:?})...", profile.bootstrap);
 
+    // Install host's public key so the user can `code --remote ssh-remote+...`
+    // (and re-runs of `vm exec`) without password prompts. Idempotent.
+    install_host_pubkey(session)?;
+
     if profile.bootstrap == BootstrapMode::SshOnly {
         let out = ssh::exec(session, "echo ok")?;
         if out.contains("ok") {
@@ -111,6 +115,36 @@ fn run_step(session: &ssh2::Session, label: &str, cmd: &str) -> Result<()> {
         println!(" ✓");
     }
     Ok(())
+}
+
+fn install_host_pubkey(session: &ssh2::Session) -> Result<()> {
+    let pub_key = match find_public_key() {
+        Ok(k) => k,
+        Err(_) => {
+            println!("  ⚠ no SSH public key in ~/.ssh — VS Code Remote SSH will prompt for password");
+            return Ok(());
+        }
+    };
+    // Quote-safe single-line shell pipeline. grep -qxF avoids partial-line matches.
+    let cmd = format!(
+        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && \
+         chmod 600 ~/.ssh/authorized_keys && \
+         grep -qxF {key} ~/.ssh/authorized_keys || echo {key} >> ~/.ssh/authorized_keys",
+        key = shell_quote(&pub_key)
+    );
+    let (out, code) = ssh::exec_with_exit(session, &cmd)?;
+    if code != 0 {
+        println!("  ⚠ failed to install host pubkey (exit {code}): {out}");
+    } else {
+        println!("  ✓ host SSH key authorised (passwordless `code --remote` ready)");
+    }
+    Ok(())
+}
+
+fn shell_quote(s: &str) -> String {
+    // Wrap in single quotes; escape any embedded single quotes by closing,
+    // adding an escaped quote, and reopening.
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 // ── Windows bootstrap ─────────────────────────────────────────────────────────
