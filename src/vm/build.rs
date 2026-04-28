@@ -61,11 +61,14 @@ pub fn run(profile: &VmProfile, project_dir: &Path) -> Result<()> {
     let tar_bytes = std::fs::metadata(&tmp_tar)?.len();
     println!("  archive: {:.1} MB", tar_bytes as f64 / 1_048_576.0);
 
+    // SCP destination: absolute Unix-style path on Linux; relative path on
+    // Windows (libssh2 doesn't translate `C:/...` to a Windows path that
+    // OpenSSH-SCP accepts — relative lands in the user's home directory).
     let remote_tar = match profile.os {
         GuestOs::Linux   => format!("/home/{}/sync.tar.gz", profile.user),
-        GuestOs::Windows => format!("C:/Users/{}/sync.tar.gz", profile.user),
+        GuestOs::Windows => "sync.tar.gz".to_string(),
     };
-    ssh::upload(&session, &tmp_tar, &remote_tar)?;
+    ssh::upload(profile, &tmp_tar, &remote_tar)?;
     let _ = std::fs::remove_file(&tmp_tar);
     println!("  ✓ uploaded");
 
@@ -79,10 +82,14 @@ pub fn run(profile: &VmProfile, project_dir: &Path) -> Result<()> {
         )?;
         if code != 0 { bail!("untar failed on VM:\n{out}"); }
     } else {
+        // cmd.exe gotcha: `if not exist X CMD1 && CMD2` parses as
+        // `if not exist X (CMD1 && CMD2)` — so on a re-run where X already
+        // exists, NONE of the chain runs. Use unconditional `&` plus
+        // `mkdir 2>nul` to swallow the "exists" error.
         let (out, code) = ssh::exec_with_exit(
             &session,
             &format!(
-                r#"if not exist "{vm_project_dir}" mkdir "{vm_project_dir}" && cd "{vm_project_dir}" && tar -xzf "%USERPROFILE%\sync.tar.gz" && del "%USERPROFILE%\sync.tar.gz""#
+                r#"mkdir "{vm_project_dir}" 2>nul & cd /d "{vm_project_dir}" && tar -xzf "%USERPROFILE%\sync.tar.gz" && del "%USERPROFILE%\sync.tar.gz""#
             ),
         )?;
         if code != 0 { bail!("untar failed on VM:\n{out}"); }
@@ -135,13 +142,13 @@ pub fn run(profile: &VmProfile, project_dir: &Path) -> Result<()> {
     };
     if code != 0 { bail!("Failed to archive artifacts on VM:\n{out}"); }
 
-    // Download
+    // Download (same Linux-absolute / Windows-relative split as the upload path)
     let remote_artifacts = match profile.os {
         GuestOs::Linux   => format!("/home/{}/artifacts.tar.gz", profile.user),
-        GuestOs::Windows => format!("C:/Users/{}/artifacts.tar.gz", profile.user),
+        GuestOs::Windows => "artifacts.tar.gz".to_string(),
     };
     let local_tar = artifacts_dir.join("artifacts.tar.gz");
-    ssh::download(&session, &remote_artifacts, &local_tar)?;
+    ssh::download(profile, &remote_artifacts, &local_tar)?;
 
     // Clean up on VM
     let _ = if profile.os == GuestOs::Linux {

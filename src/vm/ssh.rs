@@ -115,40 +115,42 @@ pub fn exec_streaming(profile: &VmProfile, cmd: &str) -> Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
-#[allow(dead_code)]
-/// Upload a local file to the VM via SCP.
-pub fn upload(session: &Session, local: &std::path::Path, remote_path: &str) -> Result<()> {
-    let data = std::fs::read(local).with_context(|| format!("reading {}", local.display()))?;
-    let mut channel = session
-        .scp_send(
-            std::path::Path::new(remote_path),
-            0o644,
-            data.len() as u64,
-            None,
-        )
-        .with_context(|| format!("SCP send to {remote_path}"))?;
-    use std::io::Write;
-    channel.write_all(&data).context("writing SCP data")?;
-    channel.send_eof().context("SCP send EOF")?;
-    channel.wait_eof().context("SCP wait EOF")?;
-    channel.close().context("SCP close")?;
-    channel.wait_close().context("SCP wait close")?;
-    Ok(())
+/// Upload a local file to the VM. Shells out to `scp` because libssh2's
+/// scp_send is unreliable against Windows OpenSSH (relative dest paths
+/// silently no-op).
+pub fn upload(profile: &VmProfile, local: &std::path::Path, remote_path: &str) -> Result<()> {
+    scp(
+        profile,
+        local.to_str().context("local path not UTF-8")?,
+        &format!("{}@localhost:{remote_path}", profile.user),
+    )
 }
 
-/// Download a remote file to a local path via SCP.
-pub fn download(session: &Session, remote_path: &str, local: &std::path::Path) -> Result<()> {
-    let (mut channel, _stat) = session
-        .scp_recv(std::path::Path::new(remote_path))
-        .with_context(|| format!("SCP recv {remote_path}"))?;
-    let mut data = Vec::new();
-    channel.read_to_end(&mut data).context("reading SCP data")?;
-    channel.send_eof().context("SCP send EOF")?;
-    channel.wait_eof().context("SCP wait EOF")?;
-    channel.close().context("SCP close")?;
-    channel.wait_close().context("SCP wait close")?;
-    std::fs::write(local, &data)
-        .with_context(|| format!("writing {}", local.display()))
+/// Download a remote file to the local host via `scp`.
+pub fn download(profile: &VmProfile, remote_path: &str, local: &std::path::Path) -> Result<()> {
+    scp(
+        profile,
+        &format!("{}@localhost:{remote_path}", profile.user),
+        local.to_str().context("local path not UTF-8")?,
+    )
+}
+
+fn scp(profile: &VmProfile, src: &str, dst: &str) -> Result<()> {
+    let status = std::process::Command::new("scp")
+        .args([
+            "-P", &profile.ssh_port.to_string(),
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-o", "BatchMode=yes",
+            src, dst,
+        ])
+        .status()
+        .context("spawning scp")?;
+    if !status.success() {
+        anyhow::bail!("scp {} -> {} exited {}", src, dst, status);
+    }
+    Ok(())
 }
 
 /// Check SSH is reachable — exit 1 with a helpful message if not.

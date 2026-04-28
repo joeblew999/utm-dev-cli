@@ -202,22 +202,39 @@ Restart-Service sshd
         println!("  ✓ sshd already running");
     }
 
-    // Step 2: Authorise the host's public key (~/.ssh/authorized_keys — matches sshd_config)
+    // Step 2: Authorise the host's public key. Windows OpenSSH has a default
+    // `Match Group administrators` block in sshd_config that redirects admin
+    // users (vagrant is admin on Vagrant boxes) to read keys from
+    // C:\ProgramData\ssh\administrators_authorized_keys — NOT ~/.ssh/.
+    // Step 1's regex-rewrite tries to comment that block out but the regex
+    // doesn't always match cleanly across sshd_config variants, so we install
+    // the key in BOTH paths and stay compatible regardless.
     let pub_key = find_public_key()?;
     let key_ps = format!(
         r#"
 $key = '{pub_key}'
+
+# User-level (works when Match Group administrators is commented out)
 $dir = "$env:USERPROFILE\.ssh"
 if (-not (Test-Path $dir)) {{ New-Item -ItemType Directory -Path $dir | Out-Null }}
 $f = "$dir\authorized_keys"
-if (-not (Test-Path $f) -or ((Get-Content $f) -notcontains $key)) {{
+if (-not (Test-Path $f) -or ((Get-Content $f -ErrorAction SilentlyContinue) -notcontains $key)) {{
     Add-Content $f $key -Encoding ASCII
 }}
 icacls $f /inheritance:r /grant ($env:USERNAME + ':F') /grant 'SYSTEM:F' | Out-Null
+
+# Admin-level (always-honoured location for Match Group administrators users)
+$adm = 'C:\ProgramData\ssh\administrators_authorized_keys'
+if (-not (Test-Path $adm) -or ((Get-Content $adm -ErrorAction SilentlyContinue) -notcontains $key)) {{
+    Add-Content $adm $key -Encoding ASCII
+}}
+icacls $adm /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F' | Out-Null
+
+Restart-Service sshd -ErrorAction SilentlyContinue
 "#
     );
     w.run_ps(&key_ps)?;
-    println!("  ✓ SSH authorized key installed");
+    println!("  ✓ SSH authorized key installed (both user + admin paths)");
 
     // Step 3: LocalAccountTokenFilterPolicy — lets WinRM work with local admin accounts
     w.run_ps(
