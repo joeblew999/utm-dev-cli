@@ -9,26 +9,22 @@ use super::profiles::{GuestOs, VmProfile};
 use super::ssh;
 
 /// Rust target triples for each (BuildTarget × GuestOs) combination.
-/// Linux x86_64 is intentionally absent — the caller (`vm_build`) rejects it
-/// before reaching here because Linux x86_64 cross from ARM64 needs multiarch
-/// system libs we don't yet provision.
+///
+/// Windows arm64 / both are intentionally absent — the caller (`vm_build`)
+/// rejects them up front because Microsoft's VS Build Tools doesn't ship a
+/// native ARM64-host-targeting-ARM64 toolchain (Hostarm64\arm64\link.exe).
+/// Only ARM64-host cross-compile to x64/x86 is available, so we ship x64
+/// binaries from the ARM64 VM via x64 emulation.
+///
+/// Linux x86_64 is also rejected — needs Debian multiarch (libwebkit2gtk:amd64
+/// + gcc-x86-64-linux-gnu) which we don't yet provision.
 fn triples(target: BuildTarget, os: GuestOs) -> Vec<&'static str> {
     match (target, os) {
-        (BuildTarget::Arm64,  GuestOs::Windows) => vec!["aarch64-pc-windows-msvc"],
         (BuildTarget::X8664,  GuestOs::Windows) => vec!["x86_64-pc-windows-msvc"],
-        (BuildTarget::Both,   GuestOs::Windows) => vec!["aarch64-pc-windows-msvc", "x86_64-pc-windows-msvc"],
+        // Should never reach: vm_build bails for Windows arm64/both, Linux x86_64/both
+        (_,                   GuestOs::Windows) => vec!["x86_64-pc-windows-msvc"],
         (BuildTarget::Arm64,  GuestOs::Linux)   => vec!["aarch64-unknown-linux-gnu"],
-        // Should never reach: vm_build bails for Linux x86_64 / Both
         (_,                   GuestOs::Linux)   => vec!["aarch64-unknown-linux-gnu"],
-    }
-}
-
-/// Map a triple to the VsDevCmd `-arch=` value (Windows only).
-fn vsdevcmd_arch(triple: &str) -> &'static str {
-    match triple {
-        "aarch64-pc-windows-msvc" => "arm64",
-        "x86_64-pc-windows-msvc"  => "amd64",
-        _                          => "arm64",
     }
 }
 
@@ -151,20 +147,23 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     };
     let linux_tee = "exec > >(tee -a ~/.utm-dev-build/build.log) 2>&1; ";
 
-    // VsDevCmd path on Windows. We re-source it per build with the right
-    // -arch= matching each triple (arm64 / amd64) so link.exe + MSVC headers/
-    // libs come from the correct cross-toolchain. cargo's vswhere-based
-    // detection isn't reliable on Vagrant's utm/windows-11 box, so we wire
-    // the env in directly.
+    // VsDevCmd path on Windows. We invoke it with -arch=amd64 -host_arch=arm64
+    // because the VM is ARM64 but ships only the x64-target cross-tools
+    // (Hostarm64\x64\link.exe) — there's no Hostarm64\arm64 toolchain in
+    // current VS Build Tools releases for ARM64 hosts. Result: every Rust
+    // build on this VM produces x86_64 binaries that run under Windows ARM64
+    // x64 emulation, including the tauri-cli compiled by mise install.
     let vsdevcmd = r#"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"#;
+    let win_msvc_x64 = format!(r#"call "{vsdevcmd}" -arch=amd64 -host_arch=arm64 -no_logo"#);
 
     println!("→ Running mise install in VM (persistent log at {log_path_h})...");
     let install_cmd = if profile.os == GuestOs::Windows {
-        // Sourcing VsDevCmd here is just to give mise's pre-build environment
-        // a stable PATH; the per-target builds source it again with their arch.
-        let win_msvc_native = format!(r#"call "{vsdevcmd}" -arch=arm64 -host_arch=arm64 -no_logo"#);
+        // CARGO_BUILD_TARGET forces cargo to target x86_64 for everything mise
+        // builds (notably tauri-cli) — without it, cargo defaults to the host
+        // triple (aarch64-pc-windows-msvc) and link.exe fails with no ARM64
+        // tools available.
         format!(
-            r#"{mkdir_log} & cd /d "{vm_project_dir}" && ({win_msvc_native} && {mise} trust --yes && {mise} install) >> "{log_path_h}" 2>&1"#
+            r#"{mkdir_log} & cd /d "{vm_project_dir}" && set CARGO_BUILD_TARGET=x86_64-pc-windows-msvc && ({win_msvc_x64} && {mise} trust --yes && {mise} install) >> "{log_path_h}" 2>&1"#
         )
     } else {
         format!(r#"{mkdir_log} && {linux_tee}cd "{vm_project_dir}" && {mise} trust --yes && {mise} install"#)
@@ -219,13 +218,11 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         }
 
         // 2. cargo tauri build --target <triple>
-        //    On Windows we source VsDevCmd with -arch matching the triple so
-        //    link.exe targets the right arch.
+        //    On Windows we always use the x64 toolchain (Hostarm64\x64) since
+        //    the only supported triple is x86_64-pc-windows-msvc.
         let build_cmd = if profile.os == GuestOs::Windows {
-            let arch = vsdevcmd_arch(triple);
-            let win_msvc = format!(r#"call "{vsdevcmd}" -arch={arch} -host_arch=arm64 -no_logo"#);
             format!(
-                r#"cd /d "{vm_project_dir}" && ({win_msvc} && {mise} exec -- cargo tauri build --target {triple}) >> "{log_path_h}" 2>&1"#
+                r#"cd /d "{vm_project_dir}" && ({win_msvc_x64} && {mise} exec -- cargo tauri build --target {triple}) >> "{log_path_h}" 2>&1"#
             )
         } else {
             format!(

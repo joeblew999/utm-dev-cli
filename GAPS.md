@@ -10,9 +10,11 @@ This is why a project consuming utm-dev MUST have `[tools] rust = "..."` (and `c
 
 ## Functional gaps (advertised but missing)
 
-1. **`vm run`** — AGENTS.md describes it; not in `VmCommands` enum. Document as future, but anyone reading `--help` is going to ask.
+1. **Windows ARM64 native build** — current VS Build Tools install on ARM64 hosts ships `Hostarm64\x64` and `Hostarm64\x86` cross-tools but no `Hostarm64\arm64` (native ARM64 toolchain). Both `vs_buildtools.exe --add Microsoft.VisualStudio.Component.VC.Tools.ARM64` and `vs_installer.exe modify --add ...` returned exit code 0 without actually installing the component — looks like Microsoft's installer doesn't yet ship a native ARM64-host-targeting-ARM64 MSVC toolchain. We work around by cross-compiling x86_64 from ARM64 (runs under Windows ARM64 emulation). Re-test periodically as MSVC catches up.
 
-2. **Linux x86_64 cross-compile** — `vm_build` rejects `--target x86-64` and `--target both` for Linux profiles. Real fix needs Debian multiarch (`dpkg --add-architecture amd64` + `:amd64` packages for libwebkit2gtk + friends + `gcc-x86-64-linux-gnu`). Plan it once Windows path is solid.
+2. **`vm run`** — AGENTS.md describes it; not in `VmCommands` enum. Document as future, but anyone reading `--help` is going to ask.
+
+3. **Linux x86_64 cross-compile** — `vm_build` rejects `--target x86-64` and `--target both` for Linux profiles. Real fix needs Debian multiarch (`dpkg --add-architecture amd64` + `:amd64` packages for libwebkit2gtk + friends + `gcc-x86-64-linux-gnu`). Plan it once Windows path is solid.
 
 3. **`vm restart`** — small ergonomic gap. Today: `vm down && vm up`.
 

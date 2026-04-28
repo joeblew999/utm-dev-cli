@@ -14,8 +14,7 @@ In your Tauri project:
 
 ```sh
 utm-dev doctor                # check tools
-utm-dev windows build         # ARM64 + x86_64 .msi/.exe → .build/windows/{arm64,x86_64}/
-utm-dev windows build --target x86-64    # x86_64 only
+utm-dev windows build         # x86_64 .msi/.exe → .build/windows/x86_64/
 utm-dev linux build           # ARM64 .deb/.AppImage → .build/linux/arm64/
 utm-dev all build             # mac + windows + linux + android + ios
 ```
@@ -26,10 +25,8 @@ First run downloads a UTM box and bootstraps the VM (10–20 min). Subsequent bu
 
 | Host VM             | Targets                                  | Notes |
 |---------------------|------------------------------------------|---|
-| Windows ARM64       | `aarch64-pc-windows-msvc`, `x86_64-pc-windows-msvc` | Cross-compile via MSVC; same VM, both archs |
+| Windows ARM64       | `x86_64-pc-windows-msvc`                 | Native ARM64 not yet supported (VS Build Tools doesn't ship Hostarm64\arm64 cross-tools); x64 binaries run under Windows ARM64 emulation |
 | Linux ARM64 (Ubuntu)| `aarch64-unknown-linux-gnu`              | x86_64 cross not yet supported (multiarch system libs) |
-
-The Windows VM (~6 GB box, ~30 GB after VS Build Tools) produces both architectures from the *same* VM. No second VM, no extra disk.
 
 ## Lower-level commands
 

@@ -460,6 +460,23 @@ fn vm_ls() -> anyhow::Result<()> {
 fn vm_build(name: &str, target: BuildTarget, _release: bool) -> anyhow::Result<()> {
     let profile = profiles::get(name)?;
 
+    // Windows ARM64 native isn't supported yet: VS Build Tools on ARM64
+    // hosts ships only x64-targeting cross-tools (Hostarm64\x64), not
+    // Hostarm64\arm64 — so the VM can't link aarch64-pc-windows-msvc
+    // binaries. Builds on this VM go through x86_64 cross-compile (which
+    // runs natively on ARM64 host producing x64 output, then runs under
+    // x64 emulation if you launch the .exe on the same VM).
+    if profile.os == profiles::GuestOs::Windows
+        && (target == BuildTarget::Arm64 || target == BuildTarget::Both)
+    {
+        anyhow::bail!(
+            "Windows ARM64 native build isn't currently supported — VS Build \
+             Tools on ARM64 hosts doesn't ship a native ARM64-on-ARM64 \
+             toolchain (Hostarm64\\arm64\\link.exe is missing). \
+             Use --target x86-64 (the default for Windows is also x86-64)."
+        );
+    }
+
     // Linux x86_64 cross-compile from ARM64 needs multiarch system libs
     // (libwebkit2gtk:amd64 etc.) which we don't yet provision. Fail loudly
     // rather than silently produce broken artifacts.

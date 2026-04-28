@@ -42,8 +42,8 @@ pub enum AndroidCommands {
 pub enum WindowsCommands {
     /// Build Windows .msi/.exe in VM (auto-starts VM on first run)
     Build {
-        #[arg(long, value_enum, default_value_t = BuildTarget::Both,
-              help = "Architecture: arm64 | x86-64 | both")]
+        #[arg(long, value_enum, default_value_t = BuildTarget::X8664,
+              help = "Architecture: x86-64 (default; arm64/both not yet supported on Windows)")]
         target: BuildTarget,
         #[arg(long, help = "Optimised release build")]
         release: bool,
@@ -131,7 +131,7 @@ pub fn run_all(cmd: AllCommands) -> Result<()> {
             println!("═══ Building all platforms ═══");
             let steps: &[(&str, fn() -> Result<()>)] = &[
                 ("mac",     || tauri(&["build"])),
-                ("windows", || super::vm::run(super::vm::VmCommands::Build { name: "windows-build".to_string(), target: BuildTarget::Both,  release: true })),
+                ("windows", || super::vm::run(super::vm::VmCommands::Build { name: "windows-build".to_string(), target: BuildTarget::X8664, release: true })),
                 ("linux",   || super::vm::run(super::vm::VmCommands::Build { name: "linux-build".to_string(),   target: BuildTarget::Arm64, release: true })),
                 ("android", || tauri_android(&["android", "build"])),
                 ("ios",     || tauri(&["ios", "build"])),
