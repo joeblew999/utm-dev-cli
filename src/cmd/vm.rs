@@ -30,6 +30,16 @@ pub enum VmCommands {
         #[arg(long, help = "Optimised release build")]
         release: bool,
     },
+    /// Launch a built binary inside the VM and capture its startup output.
+    /// Run after `vm build`. Tail with `vm logs --kind run --follow`.
+    Run {
+        #[arg(long, help = "VM profile name")]
+        name: String,
+        /// Path to the binary on the VM (absolute or relative to the project dir).
+        /// If omitted, auto-detects the most recent bundle for the host's arch.
+        #[arg(long)]
+        bin: Option<String>,
+    },
     /// Run a command in a VM via SSH
     Exec {
         #[arg(long, help = "VM profile name")]
@@ -111,6 +121,7 @@ pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
         VmCommands::Adopt { name, utm_name } => vm_adopt(&name, &utm_name),
         VmCommands::Ls                      => vm_ls(),
         VmCommands::Build { name, target, release } => vm_build(&name, target, release),
+        VmCommands::Run { name, bin }       => vm_run(&name, bin.as_deref()),
         VmCommands::Delete { name }         => vm_delete(&name),
         VmCommands::Package { name }        => vm_package(&name),
         VmCommands::ResizeDisk { name, plus_gb } => vm_resize_disk(&name, plus_gb),
@@ -463,6 +474,51 @@ fn vm_ls() -> anyhow::Result<()> {
 
 // ── vm build ──────────────────────────────────────────────────────────────────
 
+// ── vm run ────────────────────────────────────────────────────────────────────
+
+fn vm_run(name: &str, bin: Option<&str>) -> anyhow::Result<()> {
+    let profile = profiles::get(name)?;
+    ssh::check(profile)?;
+
+    let bin = bin.ok_or_else(|| anyhow::anyhow!(
+        "vm run --bin <path> is required. Pass the path to the built binary on the VM \
+         (e.g. for the demo: --bin src-tauri/target/x86_64-pc-windows-msvc/release/app.exe). \
+         Auto-detection from .build/ will land in a follow-up."
+    ))?;
+
+    let session = ssh::connect(profile)?;
+
+    println!("→ Launching {bin} in {name} (output → ~/.utm-dev-run/run.log)...");
+
+    let cmd = match profile.os {
+        profiles::GuestOs::Linux => format!(
+            // xvfb-run gives the GUI app a virtual display so it boots
+            // headlessly; nohup detaches so the SSH channel can close.
+            r#"mkdir -p ~/.utm-dev-run && \
+               nohup xvfb-run -a "{bin}" > ~/.utm-dev-run/run.log 2>&1 & \
+               sleep 2 && echo "PID=$!" && jobs -p"#
+        ),
+        profiles::GuestOs::Windows => format!(
+            // Start-Process detaches; redirect both streams to the run log.
+            // The .err file is rolled into run.log on read by `vm logs`.
+            r#"powershell -NoProfile -Command ^
+              "if (-not (Test-Path '$env:USERPROFILE\.utm-dev-run')) {{ New-Item -ItemType Directory -Path '$env:USERPROFILE\.utm-dev-run' | Out-Null }}; ^
+               $log = '$env:USERPROFILE\.utm-dev-run\run.log'; ^
+               $err = '$env:USERPROFILE\.utm-dev-run\run.log.err'; ^
+               $p = Start-Process -FilePath '{bin}' -RedirectStandardOutput $log -RedirectStandardError $err -PassThru; ^
+               Write-Output ('PID=' + $p.Id)""#
+        ),
+    };
+
+    let (out, code) = ssh::exec_with_exit(&session, &cmd)?;
+    if code != 0 {
+        anyhow::bail!("Failed to launch {bin}:\n{out}");
+    }
+    println!("{out}");
+    println!("✓ Launched. Tail output:  utm-dev vm logs --name {name} --kind run --follow");
+    Ok(())
+}
+
 fn vm_build(name: &str, target: BuildTarget, _release: bool) -> anyhow::Result<()> {
     let profile = profiles::get(name)?;
 
@@ -483,17 +539,8 @@ fn vm_build(name: &str, target: BuildTarget, _release: bool) -> anyhow::Result<(
         );
     }
 
-    // Linux x86_64 cross-compile from ARM64 needs multiarch system libs
-    // (libwebkit2gtk:amd64 etc.) which we don't yet provision. Fail loudly
-    // rather than silently produce broken artifacts.
-    if profile.os == profiles::GuestOs::Linux
-        && (target == BuildTarget::X8664 || target == BuildTarget::Both)
-    {
-        anyhow::bail!(
-            "Linux x86_64 cross-compile from ARM64 isn't yet supported \
-             (multi-arch system libs required). Use --target arm64."
-        );
-    }
+    // Linux x86_64 from ARM64 is now supported via Debian multiarch — see
+    // build::ensure_linux_multiarch (called inside build::run when needed).
 
     // Auto-start VM if SSH not reachable
     if ssh::connect(profile).is_err() {

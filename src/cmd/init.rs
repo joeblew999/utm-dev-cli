@@ -1,4 +1,4 @@
-/// `utm-dev init` — append [tools] and [env] blocks to the current project's mise.toml.
+/// `utm-dev init` — append [tools] (and optionally Android [env]) to mise.toml.
 /// Idempotent: detects existing utm-dev marker, or warns if [tools]/[env] already present.
 use anyhow::{bail, Result};
 use std::fs;
@@ -6,11 +6,24 @@ use std::io::Write;
 
 const MARKER: &str = "# utm-dev tools";
 
-const BLOCK: &str = r#"
+/// Minimal block — just enough for VM-driven Tauri builds.
+const BLOCK_MINIMAL: &str = r#"
 # ── Added by: utm-dev init ───────────────────────────────────────────────────
 
 # utm-dev tools — added by utm-dev init
 [tools]
+rust              = "stable"
+"cargo:tauri-cli" = "2"
+bun               = "latest"
+"#;
+
+/// Full block — adds Xcode/Ruby/Java host tools and Android [env] paths.
+const BLOCK_ANDROID: &str = r#"
+# ── Added by: utm-dev init --android ────────────────────────────────────────
+
+# utm-dev tools — added by utm-dev init --android
+[tools]
+rust              = "stable"
 "cargo:tauri-cli" = "2"
 bun               = "latest"
 xcodegen          = {version = "latest", os = ["macos"]}
@@ -25,7 +38,7 @@ JAVA_HOME = "{{env.HOME}}/.local/share/mise/installs/java/temurin-17.0.18+8"
 _.path = ["{{env.HOME}}/.android-sdk/platform-tools", "{{env.HOME}}/.android-sdk/emulator", "{{env.HOME}}/.android-sdk/cmdline-tools/latest/bin"]
 "#;
 
-pub fn run() -> Result<()> {
+pub fn run(android: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let mise_toml = cwd.join("mise.toml");
 
@@ -51,14 +64,17 @@ pub fn run() -> Result<()> {
         println!("  Add the following lines manually to your existing sections:\n");
         if has_tools {
             println!("  # In your [tools] section:");
+            println!(r#"  rust              = "stable""#);
             println!(r#"  "cargo:tauri-cli" = "2""#);
             println!(r#"  bun               = "latest""#);
-            println!(r#"  xcodegen          = {{version = "latest", os = ["macos"]}}"#);
-            println!(r#"  ruby              = {{version = "3.3",    os = ["macos"]}}"#);
-            println!(r#"  java              = "temurin-17.0.18+8""#);
+            if android {
+                println!(r#"  xcodegen          = {{version = "latest", os = ["macos"]}}"#);
+                println!(r#"  ruby              = {{version = "3.3",    os = ["macos"]}}"#);
+                println!(r#"  java              = "temurin-17.0.18+8""#);
+            }
             println!();
         }
-        if has_env {
+        if has_env && android {
             println!("  # In your [env] section:");
             println!(r#"  ANDROID_HOME = "{{{{env.HOME}}}}/.android-sdk""#);
             println!(r#"  NDK_HOME = "{{{{env.HOME}}}}/.android-sdk/ndk/27.2.12479018""#);
@@ -69,13 +85,19 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
+    let block = if android { BLOCK_ANDROID } else { BLOCK_MINIMAL };
     let mut f = fs::OpenOptions::new().append(true).open(&mise_toml)?;
-    f.write_all(BLOCK.as_bytes())?;
+    f.write_all(block.as_bytes())?;
 
-    println!("✓ Added [tools] and [env] to {}", mise_toml.display());
+    let label = if android { "[tools] and [env] (Android)" } else { "[tools] (minimal)" };
+    println!("✓ Added {label} to {}", mise_toml.display());
     println!();
     println!("Next:");
     println!("  mise install         # Install tools");
-    println!("  utm-dev setup        # Install SDKs");
+    if android {
+        println!("  utm-dev setup        # Install Android SDK + Xcode deps");
+    } else {
+        println!("  utm-dev windows build  # cross-platform build via VMs");
+    }
     Ok(())
 }

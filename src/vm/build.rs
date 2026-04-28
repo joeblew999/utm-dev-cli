@@ -185,6 +185,14 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     if code != 0 { bail!("mise install failed inside VM (exit {code}) — see: utm-dev vm logs --name {}", profile.name); }
     println!("✓ Tools installed");
 
+    // Linux x86_64 cross-compile prep: ensure multiarch + amd64 system libs.
+    // No-op on Windows or when only building native ARM64 on Linux.
+    if profile.os == GuestOs::Linux
+        && (target == BuildTarget::X8664 || target == BuildTarget::Both)
+    {
+        ensure_linux_multiarch(profile, &session)?;
+    }
+
     // Resolve CARGO_TARGET_DIR once. cargo per-target output goes to
     // {target_dir}/{triple}/release/bundle.
     //
@@ -241,13 +249,17 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         // 2. cargo tauri build --target <triple>
         //    On Windows we always use the x64 toolchain (Hostarm64\x64) since
         //    the only supported triple is x86_64-pc-windows-msvc.
+        //    For Linux x86_64 cross-compile, point cargo at the multiarch
+        //    cross-linker (gcc-x86-64-linux-gnu) and pass PKG_CONFIG_PATH so
+        //    pkg-config picks up :amd64 system libs.
         let build_cmd = if profile.os == GuestOs::Windows {
             format!(
                 r#"cd /d "{vm_project_dir}" && ({win_msvc_x64} && {mise} exec -- cargo tauri build --target {triple}) >> "{log_path_h}" 2>&1"#
             )
         } else {
+            let linux_cross_env = linux_cross_env_for(triple);
             format!(
-                r#"{linux_tee}cd "{vm_project_dir}" && {mise} exec -- cargo tauri build --target {triple}"#
+                r#"{linux_tee}cd "{vm_project_dir}" && {linux_cross_env}{mise} exec -- cargo tauri build --target {triple}"#
             )
         };
         let code = ssh::exec_streaming(profile, &build_cmd)?;
@@ -330,6 +342,63 @@ fn arch_label_for(triple: &str) -> &'static str {
         "x86_64-unknown-linux-gnu"    => "x86_64",
         _                              => "unknown",
     }
+}
+
+/// Per-triple env prefix for cargo tauri build on Linux. Currently only
+/// the x86_64 cross needs anything — point cargo at the cross-linker and
+/// pkg-config at the multiarch :amd64 library paths so libwebkit2gtk and
+/// friends resolve correctly.
+fn linux_cross_env_for(triple: &str) -> String {
+    match triple {
+        "x86_64-unknown-linux-gnu" => {
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+             PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
+             PKG_CONFIG_ALLOW_CROSS=1 \
+             PKG_CONFIG_SYSROOT_DIR=/ ".to_string()
+        }
+        _ => String::new(),
+    }
+}
+
+/// Enable Debian multiarch (amd64 architecture in dpkg) and install the
+/// :amd64 system libraries Tauri/WebKitGTK needs to cross-link x86_64
+/// binaries from an ARM64 host. Idempotent — checks before installing.
+fn ensure_linux_multiarch(profile: &VmProfile, session: &ssh2::Session) -> Result<()> {
+    println!("→ Ensuring Linux multiarch (amd64) deps...");
+
+    // Check sentinel package first; bail early if already installed.
+    let check = ssh::exec(
+        session,
+        "dpkg-query -W -f='${Status}' libwebkit2gtk-4.1-dev:amd64 2>/dev/null | grep -c 'ok installed'",
+    )
+    .unwrap_or_default();
+    if check.trim() == "1" {
+        println!("  ✓ multiarch deps already installed");
+        return Ok(());
+    }
+
+    // dpkg --add-architecture amd64 needs root; do everything via sudo in
+    // one shell so apt update sees the new arch list.
+    let cmd = "set -e; \
+        sudo dpkg --add-architecture amd64; \
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq; \
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+          gcc-x86-64-linux-gnu \
+          libwebkit2gtk-4.1-dev:amd64 \
+          libgtk-3-dev:amd64 \
+          libayatana-appindicator3-dev:amd64 \
+          librsvg2-dev:amd64 \
+          libssl-dev:amd64 \
+          libxdo-dev:amd64 \
+          libsoup-3.0-dev:amd64 \
+          libjavascriptcoregtk-4.1-dev:amd64";
+
+    let code = ssh::exec_streaming(profile, cmd)?;
+    if code != 0 {
+        bail!("multiarch setup failed (exit {code})");
+    }
+    println!("✓ multiarch deps installed");
+    Ok(())
 }
 
 fn walk_files(dir: &Path) -> Result<Vec<PathBuf>> {

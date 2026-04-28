@@ -45,8 +45,12 @@ pub enum Commands {
     /// Set up platform dev tools (macOS: Android SDK + Xcode deps; Linux: system libs)
     Setup,
 
-    /// Add [tools] and [env] to your project's mise.toml (idempotent)
-    Init,
+    /// Add [tools] (and optionally Android [env]) to your project's mise.toml
+    Init {
+        /// Include Android SDK paths and Java pin (otherwise minimal block)
+        #[arg(long)]
+        android: bool,
+    },
 
     /// Free disk space (Rust targets, caches, simulators)
     Clean {
@@ -87,7 +91,7 @@ pub fn run() -> anyhow::Result<()> {
     match cli.command {
         Commands::Doctor => doctor::run(),
         Commands::Setup => setup::run(),
-        Commands::Init => init::run(),
+        Commands::Init { android } => init::run(android),
         Commands::Clean { deep } => clean::run(deep),
         Commands::Mac(cmd) => platform::run_mac(cmd),
         Commands::Ios(cmd) => platform::run_ios(cmd),
