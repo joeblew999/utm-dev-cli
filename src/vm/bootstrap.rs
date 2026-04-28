@@ -6,9 +6,6 @@ use super::profiles::{BootstrapMode, GuestOs, VmProfile};
 use super::{ssh, winrm};
 
 pub fn run(profile: &VmProfile) -> Result<()> {
-    if profile.bootstrap == BootstrapMode::None {
-        return Ok(());
-    }
     match profile.os {
         GuestOs::Linux   => {
             // Linux is reachable via SSH right after wait_for_boot succeeds.

@@ -10,7 +10,6 @@ pub enum GuestOs {
 pub enum BootstrapMode {
     Full,
     SshOnly,
-    None,
 }
 
 #[derive(Debug, Clone)]
@@ -26,10 +25,6 @@ pub struct VmProfile {
     pub bootstrap:   BootstrapMode,
     pub memory_mib:  u32,
     pub cpu_cores:   u32,
-    /// Minimum disk size in GiB. If the imported qcow2 is smaller, vm up
-    /// grows it (qemu-img resize) and bootstrap extends the guest partition
-    /// (Resize-Partition / growpart + resize2fs). None = leave default.
-    pub disk_gib:    Option<u32>,
 }
 
 const PROFILES: &[VmProfile] = &[
@@ -47,7 +42,6 @@ const PROFILES: &[VmProfile] = &[
         cpu_cores:  4,
         // Vagrant utm/windows-11 ships with ~26 GB. VS Build Tools alone
         // takes 5-6 GB; a Tauri build adds another ~6 GB. 80 GB is comfortable.
-        disk_gib:   Some(80),
     },
     VmProfile {
         name:       "windows-test",
@@ -61,7 +55,6 @@ const PROFILES: &[VmProfile] = &[
         bootstrap:  BootstrapMode::SshOnly,
         memory_mib: 4096,
         cpu_cores:  2,
-        disk_gib:   None,
     },
     VmProfile {
         name:       "linux-build",
@@ -77,7 +70,6 @@ const PROFILES: &[VmProfile] = &[
         cpu_cores:  4,
         // Vagrant utm/ubuntu-24.04 ships with ~19 GB. Vanilla Tauri ate
         // ~10 GB at peak; 40 GB gives headroom for bigger user projects.
-        disk_gib:   Some(40),
     },
     VmProfile {
         name:       "linux-test",
@@ -91,7 +83,6 @@ const PROFILES: &[VmProfile] = &[
         bootstrap:  BootstrapMode::SshOnly,
         memory_mib: 2048,
         cpu_cores:  2,
-        disk_gib:   None,
     },
     VmProfile {
         name:       "linux-dev",
@@ -105,12 +96,8 @@ const PROFILES: &[VmProfile] = &[
         bootstrap:  BootstrapMode::Full,
         memory_mib: 6144,
         cpu_cores:  4,
-        disk_gib:   Some(40),
     },
 ];
-
-#[allow(dead_code)]
-pub const DEFAULT_VM: &str = "windows-build";
 
 pub fn get(name: &str) -> Result<&'static VmProfile> {
     PROFILES
@@ -128,20 +115,4 @@ pub fn get(name: &str) -> Result<&'static VmProfile> {
 
 pub fn list() -> impl Iterator<Item = &'static VmProfile> {
     PROFILES.iter()
-}
-
-#[allow(dead_code)]
-pub fn vm_home(profile: &VmProfile) -> String {
-    match profile.os {
-        GuestOs::Windows => format!("C:\\Users\\{}", profile.user),
-        GuestOs::Linux   => format!("/home/{}", profile.user),
-    }
-}
-
-#[allow(dead_code)]
-pub fn path_sep(profile: &VmProfile) -> char {
-    match profile.os {
-        GuestOs::Windows => '\\',
-        GuestOs::Linux   => '/',
-    }
 }

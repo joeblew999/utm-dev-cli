@@ -48,9 +48,6 @@ pub enum Commands {
     /// Add [tools] and [env] to your project's mise.toml (idempotent)
     Init,
 
-    /// Generate all platform icons from app-icon.png
-    Icon,
-
     /// Free disk space (Rust targets, caches, simulators)
     Clean {
         #[arg(long, help = "Also clean Homebrew, Xcode archives, Docker")]
@@ -91,7 +88,6 @@ pub fn run() -> anyhow::Result<()> {
         Commands::Doctor => doctor::run(),
         Commands::Setup => setup::run(),
         Commands::Init => init::run(),
-        Commands::Icon => todo!("icon — generate platform icons"),
         Commands::Clean { deep } => clean::run(deep),
         Commands::Mac(cmd) => platform::run_mac(cmd),
         Commands::Ios(cmd) => platform::run_ios(cmd),

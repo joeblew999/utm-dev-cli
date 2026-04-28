@@ -168,15 +168,6 @@ impl WinRM {
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    /// Run a cmd.exe command.
-    #[allow(dead_code)]
-    pub fn run_cmd(&self, command: &str) -> Result<CmdResult> {
-        let shell_id = self.create_shell()?;
-        let result   = self.exec_command(&shell_id, "cmd.exe", &["/c", command]);
-        self.delete_shell(&shell_id);
-        result
-    }
-
     /// Run a PowerShell script (encoded as UTF-16LE to handle special chars).
     pub fn run_ps(&self, script: &str) -> Result<CmdResult> {
         let utf16: Vec<u8> = script

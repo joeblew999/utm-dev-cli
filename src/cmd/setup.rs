@@ -7,7 +7,7 @@
 /// Idempotent — checks before each step.
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 const JAVA_VERSION:        &str = "temurin-17.0.18+8";
@@ -438,5 +438,3 @@ fn sh(script: &str) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-fn _hush_unused(_: &PathBuf) {}

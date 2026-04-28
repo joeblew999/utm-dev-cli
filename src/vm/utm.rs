@@ -124,11 +124,6 @@ pub fn list_vms() -> Result<Vec<VmEntry>> {
     Ok(entries)
 }
 
-#[allow(dead_code)]
-pub fn find_vm_by_uuid(uuid: &str) -> Result<Option<VmEntry>> {
-    Ok(list_vms()?.into_iter().find(|e| e.uuid == uuid))
-}
-
 // ── VM lifecycle ─────────────────────────────────────────────────────────────
 
 pub fn start_vm(display_name: &str) -> Result<()> {
