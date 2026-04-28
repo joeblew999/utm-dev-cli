@@ -39,11 +39,22 @@ First run downloads a UTM box and bootstraps the VM (10–20 min). Subsequent bu
 ## Lower-level commands
 
 ```sh
-utm-dev vm ls                                  # list profiles + UTM status
-utm-dev vm up    --name windows-build          # start + bootstrap
-utm-dev vm down  --name windows-build
-utm-dev vm shell --name windows-build          # interactive ssh
-utm-dev vm logs  --name windows-build --follow # tail build log on the VM
+utm-dev vm ls                                       # list profiles + UTM status
+utm-dev vm up      --name windows-build             # start + bootstrap
+utm-dev vm down    --name windows-build
+utm-dev vm restart --name windows-build
+utm-dev vm shell   --name windows-build             # interactive ssh
+utm-dev vm doctor  --name windows-build             # health checks inside the VM
+utm-dev vm exec    --name windows-build  "ver"      # run one command via ssh
+
+# Logs (build or run; use --tail/--errors when something failed)
+utm-dev vm logs  --name windows-build --follow
+utm-dev vm logs  --name windows-build --tail 200
+utm-dev vm logs  --name windows-build --errors      # grep error stanzas with context
+utm-dev vm logs  --name windows-build --kind run --follow
+
+# After build, launch the binary on the VM and capture startup
+utm-dev vm run   --name windows-build --bin <vm-side-path-to.exe>
 ```
 
 ## Requirements
