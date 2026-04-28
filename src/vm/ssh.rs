@@ -94,6 +94,27 @@ pub fn exec_with_exit(session: &Session, cmd: &str) -> Result<(String, i32)> {
     Ok((output.trim().to_string(), exit_code))
 }
 
+/// Run a command via the `ssh` CLI subprocess so stdout/stderr stream live
+/// to the user's terminal (libssh2's read_to_string blocks until completion,
+/// which makes long ops like `cargo build` go silent for 10+ minutes).
+/// Returns the exit code.
+pub fn exec_streaming(profile: &VmProfile, cmd: &str) -> Result<i32> {
+    let target = format!("{}@localhost", profile.user);
+    let status = std::process::Command::new("ssh")
+        .args([
+            "-p", &profile.ssh_port.to_string(),
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-o", "BatchMode=yes",
+        ])
+        .arg(&target)
+        .arg(cmd)
+        .status()
+        .context("spawning ssh subprocess")?;
+    Ok(status.code().unwrap_or(1))
+}
+
 #[allow(dead_code)]
 /// Upload a local file to the VM via SCP.
 pub fn upload(session: &Session, local: &std::path::Path, remote_path: &str) -> Result<()> {

@@ -91,25 +91,25 @@ pub fn run(profile: &VmProfile, project_dir: &Path) -> Result<()> {
 
     // ── Install tools ─────────────────────────────────────────────────────────
 
-    println!("→ Running mise install in VM...");
+    println!("→ Running mise install in VM (live output)...");
     let mise  = if profile.os == GuestOs::Linux { "~/.local/bin/mise" } else { "mise" };
-    let (out, code) = ssh::exec_with_exit(
-        &session,
+    let code = ssh::exec_streaming(
+        profile,
         &format!(r#"cd "{vm_project_dir}" && {mise} trust --yes && {mise} install"#),
     )?;
-    if code != 0 { bail!("mise install failed inside VM:\n{out}"); }
+    if code != 0 { bail!("mise install failed inside VM (exit {code})"); }
     println!("✓ Tools installed");
 
     // ── Build ─────────────────────────────────────────────────────────────────
 
     let platform_label = match profile.os { GuestOs::Windows => "Windows", GuestOs::Linux => "Linux" };
-    println!("→ Building Tauri {platform_label} app (first run may take 10–30 min)...");
+    println!("→ Building Tauri {platform_label} app (live output; first run may take 10–30 min)...");
 
-    let (out, code) = ssh::exec_with_exit(
-        &session,
+    let code = ssh::exec_streaming(
+        profile,
         &format!(r#"cd "{vm_project_dir}" && {mise} run build"#),
     )?;
-    if code != 0 { bail!("Build failed inside VM:\n{out}"); }
+    if code != 0 { bail!("Build failed inside VM (exit {code})"); }
     println!("✓ Build complete");
 
     // ── Pull artifacts ────────────────────────────────────────────────────────
