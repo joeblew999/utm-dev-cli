@@ -471,7 +471,7 @@ fn vm_doctor(name: &str) -> anyhow::Result<()> {
             ("VS Hostarm64\\arm64 native tools (BLOCKED)",
              r#"for /d %V in ("C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\*") do @if exist "%V\bin\Hostarm64\arm64\link.exe" (echo ok) else (echo BLOCKED_BY_MS)"#),
             ("WebView2 Runtime",
-             r#"powershell -NoProfile -Command "if (winget list --id Microsoft.EdgeWebView2Runtime --accept-source-agreements 2>$null | Select-String 'EdgeWebView2') { 'ok' } else { 'MISSING' }""#),
+             r#"if exist "C:\Program Files (x86)\Microsoft\EdgeWebView" (echo ok) else (echo MISSING)"#),
             ("rustup default-host = x86_64",
              r#"powershell -NoProfile -Command "$r = (mise where rust 2>$null); if ($r) { & ($r + '\\rustup.exe') show 2>$null | Select-String 'Default host:.*x86_64' | ForEach-Object { 'ok' } } else { 'MISSING' }""#),
         ],
