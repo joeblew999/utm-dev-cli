@@ -477,20 +477,26 @@ fn vm_doctor(name: &str) -> anyhow::Result<()> {
         ],
     };
 
-    let mut failed = 0;
+    let mut real_failures = 0;
+    let mut expected_failures = 0;
     for (label, cmd) in checks {
         let out = ssh::exec(&session, cmd).unwrap_or_else(|e| format!("ERR {e}"));
         let trimmed = out.trim();
+        let blocked = trimmed.contains("BLOCKED_BY_MS");
         let pass = !trimmed.is_empty()
             && !trimmed.contains("MISSING")
-            && !trimmed.contains("BLOCKED_BY_MS")
+            && !blocked
             && !trimmed.starts_with("ERR")
             && !trimmed.contains("could not find")
             && !trimmed.contains("not recognized");
         if pass {
             println!("  ✓ {label}");
+        } else if blocked {
+            // Known limitation outside our control — surface but don't count as a real failure.
+            println!("  ⚠ {label} (known-blocked, not actionable)");
+            expected_failures += 1;
         } else {
-            failed += 1;
+            real_failures += 1;
             println!("  ✗ {label}");
             for line in trimmed.lines().take(3) {
                 println!("      {line}");
@@ -499,10 +505,15 @@ fn vm_doctor(name: &str) -> anyhow::Result<()> {
     }
 
     println!();
-    if failed == 0 {
-        println!("✓ all checks passed");
+    if real_failures == 0 {
+        if expected_failures > 0 {
+            println!("✓ all actionable checks passed ({expected_failures} known-blocked, see GAPS.md)");
+        } else {
+            println!("✓ all checks passed");
+        }
     } else {
-        println!("✗ {failed} check(s) failed");
+        println!("✗ {real_failures} check(s) failed");
+        std::process::exit(1);
     }
     Ok(())
 }
