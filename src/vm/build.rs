@@ -37,7 +37,12 @@ pub fn run(profile: &VmProfile, project_dir: &Path) -> Result<()> {
     println!("→ Syncing {} to VM...", project_name);
     let tmp_tar = std::env::temp_dir().join(format!("utm-dev-sync-{}.tar.gz", std::process::id()));
 
+    // Exclude macOS AppleDouble files (._*) — they're HFS metadata bytes
+    // that aren't valid UTF-8, and Tauri's build script reads everything
+    // in src-tauri/capabilities/ which would crash on them. Also tell tar
+    // not to create them via COPYFILE_DISABLE.
     let status = Command::new("tar")
+        .env("COPYFILE_DISABLE", "1")
         .args([
             "-czf",
             tmp_tar.to_str().unwrap(),
@@ -48,6 +53,8 @@ pub fn run(profile: &VmProfile, project_dir: &Path) -> Result<()> {
             "--exclude=.mise/state",
             "--exclude=.build",
             "--exclude=.gradle",
+            "--exclude=._*",
+            "--exclude=.DS_Store",
             "-C",
             project_dir.to_str().unwrap(),
             ".",

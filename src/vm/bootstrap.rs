@@ -57,11 +57,13 @@ fn linux(session: &ssh2::Session, profile: &VmProfile) -> Result<()> {
         "dpkg -s libwebkit2gtk-4.1-dev 2>/dev/null | grep -c 'ok installed'"
     ).unwrap_or_default();
     if webkit.trim() != "1" {
+        // xvfb-run lets us start the built GTK app headlessly later (vm run)
+        // to verify it boots without a display. ~5 MB extra.
         run_step(session, "install Tauri Linux deps",
             "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
              libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
              librsvg2-dev libssl-dev libxdo-dev patchelf wget file \
-             libsoup-3.0-dev libjavascriptcoregtk-4.1-dev")?;
+             libsoup-3.0-dev libjavascriptcoregtk-4.1-dev xvfb")?;
     } else {
         println!("  ✓ Tauri deps already installed");
     }

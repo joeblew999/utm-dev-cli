@@ -33,6 +33,15 @@ pub enum VmCommands {
         #[arg(long, help = "VM profile name")]
         name: String,
     },
+    /// Tail logs from inside the VM (build, or runtime once vm run lands)
+    Logs {
+        #[arg(long, help = "VM profile name")]
+        name: String,
+        #[arg(long, default_value = "build", help = "Which log: build | run")]
+        kind: String,
+        #[arg(long, help = "Follow (tail -f) instead of dumping the full log")]
+        follow: bool,
+    },
     /// Copy file or directory from host to VM (scp -r)
     Push {
         #[arg(long, help = "VM profile name")]
@@ -68,6 +77,14 @@ pub enum VmCommands {
         #[arg(long, help = "VM profile name")]
         name: String,
     },
+    /// Grow the VM's primary qcow2 disk + extend the guest partition.
+    /// VM must be stopped. After resize, restart with `vm up`.
+    ResizeDisk {
+        #[arg(long, help = "VM profile name")]
+        name: String,
+        #[arg(long, default_value = "60", help = "Additional gigabytes to add")]
+        plus_gb: u32,
+    },
     /// List available VM profiles
     Ls,
 }
@@ -78,6 +95,7 @@ pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
         VmCommands::Down { name }           => vm_down(&name),
         VmCommands::Exec { name, cmd }      => vm_exec(&name, &cmd.join(" ")),
         VmCommands::Shell { name }          => vm_shell(&name),
+        VmCommands::Logs { name, kind, follow } => vm_logs(&name, &kind, follow),
         VmCommands::Push { name, from, to } => vm_push(&name, &from, &to),
         VmCommands::Pull { name, from, to } => vm_pull(&name, &from, &to),
         VmCommands::Adopt { name, utm_name } => vm_adopt(&name, &utm_name),
@@ -85,7 +103,98 @@ pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
         VmCommands::Build { name, release } => vm_build(&name, release),
         VmCommands::Delete { name }         => vm_delete(&name),
         VmCommands::Package { name }        => vm_package(&name),
+        VmCommands::ResizeDisk { name, plus_gb } => vm_resize_disk(&name, plus_gb),
     }
+}
+
+// ── vm resize-disk ────────────────────────────────────────────────────────────
+
+fn vm_resize_disk(name: &str, plus_gb: u32) -> anyhow::Result<()> {
+    let profile = profiles::get(name)?;
+    let st = state::load(name)
+        .map_err(|_| anyhow::anyhow!("'{name}' not imported — run: utm-dev vm up --name {name}"))?;
+
+    // VM must be stopped — resizing a running qcow2 corrupts it.
+    let running = utm::list_vms()
+        .unwrap_or_default()
+        .into_iter()
+        .any(|e| e.name == st.display_name && e.status == "started");
+    if running {
+        println!("→ Stopping {} (must be off to resize disk)...", st.display_name);
+        utm::stop_vm(&st.display_name)?;
+        std::thread::sleep(std::time::Duration::from_secs(8));
+    }
+
+    // Locate the qcow2: ~/Library/.../Documents/<display>.utm/Data/<uuid>.qcow2
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("no home dir"))?;
+    let bundle = home
+        .join("Library/Containers/com.utmapp.UTM/Data/Documents")
+        .join(format!("{}.utm", st.display_name))
+        .join("Data");
+    let qcow2 = std::fs::read_dir(&bundle)?
+        .filter_map(|e| e.ok())
+        .find(|e| e.path().extension().map(|x| x == "qcow2").unwrap_or(false))
+        .ok_or_else(|| anyhow::anyhow!("no .qcow2 found in {}", bundle.display()))?
+        .path();
+    println!("→ qcow2: {}", qcow2.display());
+
+    let qemu_img = "/Applications/UTM.app/Contents/Frameworks/qemu-img.framework/qemu-img";
+    if !std::path::Path::new(qemu_img).exists() {
+        anyhow::bail!("qemu-img not found at {qemu_img} — install UTM or set UTM_QEMU_IMG");
+    }
+
+    // Get current size (info JSON)
+    let info = std::process::Command::new(qemu_img)
+        .args(["info", "--output=json"])
+        .arg(&qcow2)
+        .output()
+        .map_err(|e| anyhow::anyhow!("qemu-img info: {e}"))?;
+    if !info.status.success() {
+        anyhow::bail!(
+            "qemu-img info failed: {}",
+            String::from_utf8_lossy(&info.stderr)
+        );
+    }
+    let info_text = String::from_utf8_lossy(&info.stdout);
+    let virtual_gb = info_text
+        .split("\"virtual-size\":")
+        .nth(1)
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|b| b as f64 / 1_073_741_824.0);
+    if let Some(gb) = virtual_gb {
+        println!("  current virtual size: {:.1} GB", gb);
+    }
+
+    println!("→ Growing qcow2 by +{plus_gb}G...");
+    let status = std::process::Command::new(qemu_img)
+        .args(["resize"])
+        .arg(&qcow2)
+        .arg(format!("+{plus_gb}G"))
+        .status()
+        .map_err(|e| anyhow::anyhow!("qemu-img resize: {e}"))?;
+    if !status.success() {
+        anyhow::bail!("qemu-img resize failed");
+    }
+    println!("✓ qcow2 grown");
+
+    println!(
+        "→ Now: utm-dev vm up --name {name}\n\
+         Then to extend the partition inside the guest:"
+    );
+    match profile.os {
+        profiles::GuestOs::Windows => {
+            println!(
+                "    utm-dev vm exec --name {name} 'powershell -NoProfile -Command \"Resize-Partition -DriveLetter C -Size (Get-PartitionSupportedSize -DriveLetter C).SizeMax\"'"
+            );
+        }
+        profiles::GuestOs::Linux => {
+            println!(
+                "    utm-dev vm exec --name {name} 'sudo growpart /dev/vda 1 && sudo resize2fs /dev/vda1'"
+            );
+        }
+    }
+    Ok(())
 }
 
 // ── vm adopt ─────────────────────────────────────────────────────────────────
@@ -211,6 +320,36 @@ fn vm_exec(name: &str, cmd: &str) -> anyhow::Result<()> {
 }
 
 // ── vm shell / vm push / vm pull (delegate to ssh + scp) ────────────────────
+
+fn vm_logs(name: &str, kind: &str, follow: bool) -> anyhow::Result<()> {
+    let profile = profiles::get(name)?;
+    ssh::check(profile)?;
+
+    let log_path = match (kind, &profile.os) {
+        ("build", profiles::GuestOs::Linux)   => "~/.utm-dev-build/build.log".to_string(),
+        ("build", profiles::GuestOs::Windows) => r"%USERPROFILE%\.utm-dev-build\build.log".to_string(),
+        ("run",   profiles::GuestOs::Linux)   => "~/.utm-dev-run/run.log".to_string(),
+        ("run",   profiles::GuestOs::Windows) => r"%USERPROFILE%\.utm-dev-run\run.log".to_string(),
+        _ => anyhow::bail!("unknown kind '{kind}' (expected: build | run)"),
+    };
+
+    let cmd = match (follow, &profile.os) {
+        (true,  profiles::GuestOs::Linux)   => format!("tail -F {log_path} 2>/dev/null"),
+        (false, profiles::GuestOs::Linux)   => format!("cat {log_path} 2>/dev/null || echo '(no log yet)'"),
+        (true,  profiles::GuestOs::Windows) => format!(
+            r#"powershell -NoProfile -Command "Get-Content '{log_path}' -Wait -Tail 1000""#
+        ),
+        (false, profiles::GuestOs::Windows) => format!(
+            r#"powershell -NoProfile -Command "if (Test-Path '{log_path}') {{ Get-Content '{log_path}' }} else {{ '(no log yet)' }}""#
+        ),
+    };
+
+    let code = ssh::exec_streaming(profile, &cmd)?;
+    if code != 0 && !follow {
+        std::process::exit(code);
+    }
+    Ok(())
+}
 
 fn vm_shell(name: &str) -> anyhow::Result<()> {
     let profile = profiles::get(name)?;
