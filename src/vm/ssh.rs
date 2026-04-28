@@ -100,8 +100,12 @@ pub fn exec_with_exit(session: &Session, cmd: &str) -> Result<(String, i32)> {
 /// Returns the exit code.
 pub fn exec_streaming(profile: &VmProfile, cmd: &str) -> Result<i32> {
     let target = format!("{}@localhost", profile.user);
+    // -tt forces a pseudo-TTY which keeps remote stdout line-buffered. Without
+    // it, programs like cargo and mise pipe-detect and buffer their output,
+    // so a 10-min compile shows nothing on the host until completion.
     let status = std::process::Command::new("ssh")
         .args([
+            "-tt",
             "-p", &profile.ssh_port.to_string(),
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",

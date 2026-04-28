@@ -98,25 +98,50 @@ pub fn run(profile: &VmProfile, project_dir: &Path) -> Result<()> {
 
     // ── Install tools ─────────────────────────────────────────────────────────
 
-    println!("→ Running mise install in VM (live output)...");
     let mise  = if profile.os == GuestOs::Linux { "~/.local/bin/mise" } else { "mise" };
-    let code = ssh::exec_streaming(
-        profile,
-        &format!(r#"cd "{vm_project_dir}" && {mise} trust --yes && {mise} install"#),
-    )?;
-    if code != 0 { bail!("mise install failed inside VM (exit {code})"); }
+
+    // Persistent log on the VM. `vm logs --name X` tails this. Survives if
+    // the SSH session drops mid-build.
+    let (log_path, tee) = match profile.os {
+        GuestOs::Linux => (
+            "~/.utm-dev-build/build.log".to_string(),
+            "mkdir -p ~/.utm-dev-build && exec > >(tee -a ~/.utm-dev-build/build.log) 2>&1; ".to_string(),
+        ),
+        GuestOs::Windows => (
+            r"%USERPROFILE%\.utm-dev-build\build.log".to_string(),
+            // cmd.exe doesn't have a native tee. Pipe through PowerShell's
+            // Tee-Object on the receiving end of the chain instead — done
+            // by the caller wrapping the whole inner command.
+            String::new(),
+        ),
+    };
+
+    println!("→ Running mise install in VM (live + persistent log at {log_path})...");
+    let install_cmd = if profile.os == GuestOs::Windows {
+        format!(
+            r#"if not exist "%USERPROFILE%\.utm-dev-build" mkdir "%USERPROFILE%\.utm-dev-build" & cd /d "{vm_project_dir}" && (({mise} trust --yes && {mise} install) 2>&1) | powershell -NoProfile -Command "$input | Tee-Object -FilePath %USERPROFILE%\.utm-dev-build\build.log -Append""#
+        )
+    } else {
+        format!(r#"{tee}cd "{vm_project_dir}" && {mise} trust --yes && {mise} install"#)
+    };
+    let code = ssh::exec_streaming(profile, &install_cmd)?;
+    if code != 0 { bail!("mise install failed inside VM (exit {code}) — full log: vm logs --name {}", profile.name); }
     println!("✓ Tools installed");
 
     // ── Build ─────────────────────────────────────────────────────────────────
 
     let platform_label = match profile.os { GuestOs::Windows => "Windows", GuestOs::Linux => "Linux" };
-    println!("→ Building Tauri {platform_label} app (live output; first run may take 10–30 min)...");
+    println!("→ Building Tauri {platform_label} app (live + persistent log; first run may take 10–30 min)...");
 
-    let code = ssh::exec_streaming(
-        profile,
-        &format!(r#"cd "{vm_project_dir}" && {mise} run build"#),
-    )?;
-    if code != 0 { bail!("Build failed inside VM (exit {code})"); }
+    let build_cmd = if profile.os == GuestOs::Windows {
+        format!(
+            r#"cd /d "{vm_project_dir}" && (({mise} run build) 2>&1) | powershell -NoProfile -Command "$input | Tee-Object -FilePath %USERPROFILE%\.utm-dev-build\build.log -Append""#
+        )
+    } else {
+        format!(r#"{tee}cd "{vm_project_dir}" && {mise} run build"#)
+    };
+    let code = ssh::exec_streaming(profile, &build_cmd)?;
+    if code != 0 { bail!("Build failed inside VM (exit {code}) — full log: vm logs --name {}", profile.name); }
     println!("✓ Build complete");
 
     // ── Pull artifacts ────────────────────────────────────────────────────────
