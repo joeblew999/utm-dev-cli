@@ -9,16 +9,23 @@ use super::profiles::VmProfile;
 
 pub const UTMCTL: &str = "/Applications/UTM.app/Contents/MacOS/utmctl";
 
+/// Minimum UTM version we've validated against. We don't auto-upgrade an
+/// older install (could break running VMs), but we warn loudly so the user
+/// knows to update. Bump this when a UTM release ships a fix or feature
+/// utm-dev relies on.
+pub const MIN_UTM_VERSION: &str = "4.6.5";
+
 // ── UTM app lifecycle ────────────────────────────────────────────────────────
 
 pub fn ensure_utm() -> Result<()> {
     let status = Command::new(UTMCTL).arg("list").output();
     if status.map(|o| o.status.success()).unwrap_or(false) {
+        warn_if_outdated();
         return Ok(());
     }
 
     if !std::path::Path::new(UTMCTL).exists() {
-        println!("→ Installing UTM via brew...");
+        println!("→ Installing UTM via brew (cask utm)...");
         let r = Command::new("brew")
             .args(["install", "--cask", "utm"])
             .env("HOMEBREW_NO_AUTO_UPDATE", "1")
@@ -40,10 +47,54 @@ pub fn ensure_utm() -> Result<()> {
         thread::sleep(Duration::from_secs(1));
         if Command::new(UTMCTL).arg("list").output().map(|o| o.status.success()).unwrap_or(false) {
             println!("✓ UTM ready");
+            warn_if_outdated();
             return Ok(());
         }
     }
     bail!("UTM did not become ready after 30s");
+}
+
+/// Read UTM's CFBundleShortVersionString from Info.plist and warn if older
+/// than MIN_UTM_VERSION. Non-fatal — won't refuse to run.
+pub fn installed_utm_version() -> Option<String> {
+    let plist = "/Applications/UTM.app/Contents/Info.plist";
+    let out = Command::new("/usr/libexec/PlistBuddy")
+        .args(["-c", "Print :CFBundleShortVersionString", plist])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn warn_if_outdated() {
+    if let Some(ver) = installed_utm_version() {
+        if version_less_than(&ver, MIN_UTM_VERSION) {
+            eprintln!(
+                "⚠ UTM {} is older than utm-dev's tested baseline ({}).\n  \
+                 Some VM operations may fail. Update via:\n    \
+                 brew upgrade --cask utm",
+                ver, MIN_UTM_VERSION
+            );
+        }
+    }
+}
+
+/// Naive semver-ish compare on dotted numeric versions. Returns true if a < b.
+fn version_less_than(a: &str, b: &str) -> bool {
+    let parts = |s: &str| -> Vec<u32> {
+        s.split('.').filter_map(|x| x.parse().ok()).collect()
+    };
+    let pa = parts(a);
+    let pb = parts(b);
+    for i in 0..pa.len().max(pb.len()) {
+        let av = pa.get(i).copied().unwrap_or(0);
+        let bv = pb.get(i).copied().unwrap_or(0);
+        if av < bv { return true; }
+        if av > bv { return false; }
+    }
+    false
 }
 
 // ── VM list ──────────────────────────────────────────────────────────────────

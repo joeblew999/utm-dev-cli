@@ -42,6 +42,19 @@ pub fn run() -> anyhow::Result<()> {
         }
     }
 
+    // UTM version + pinned-baseline check (informational, not a failure).
+    if let Some(ver) = crate::vm::utm::installed_utm_version() {
+        let baseline = crate::vm::utm::MIN_UTM_VERSION;
+        if version_at_least(&ver, baseline) {
+            println!("  ✓ UTM {} (≥ baseline {})", ver, baseline);
+        } else {
+            println!(
+                "  ⚠ UTM {} is below baseline {} — run `brew upgrade --cask utm`",
+                ver, baseline
+            );
+        }
+    }
+
     println!();
     println!(
         "ok={ok} missing_required={missing_required} missing_optional={missing_optional}"
@@ -52,4 +65,19 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn version_at_least(a: &str, b: &str) -> bool {
+    let parts = |s: &str| -> Vec<u32> {
+        s.split('.').filter_map(|x| x.parse().ok()).collect()
+    };
+    let pa = parts(a);
+    let pb = parts(b);
+    for i in 0..pa.len().max(pb.len()) {
+        let av = pa.get(i).copied().unwrap_or(0);
+        let bv = pb.get(i).copied().unwrap_or(0);
+        if av > bv { return true; }
+        if av < bv { return false; }
+    }
+    true
 }
