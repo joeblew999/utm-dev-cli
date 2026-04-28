@@ -19,21 +19,83 @@ const VAGRANT_API: &str = "https://api.cloud.hashicorp.com/vagrant/2022-09-30/re
 
 /// Ensure the VM is imported into UTM, downloading and importing if needed.
 /// Returns `(uuid, display_name)` — the display_name is what UTM actually
-/// assigned (it ignores our bundle filename and uses the box's internal
-/// `_config.plist` Name field, e.g. `packer-vm-1735447014`).
+/// assigned. UTM uses the bundle's internal `config.plist` Name field, so we
+/// rewrite it to `profile.name` before import (otherwise two profiles using
+/// the same box, e.g. linux-test + linux-build on ubuntu-24.04, collide in
+/// `~/Library/Containers/com.utmapp.UTM/Data/Documents/` and the second
+/// import lands as a half-broken orphan).
 pub fn ensure_imported(profile: &VmProfile) -> Result<(String, String)> {
+    // Already imported under our profile name? Reuse it.
     if let Some(entry) = utm::list_vms()?
         .into_iter()
-        .find(|e| e.name == profile.box_name)
+        .find(|e| e.name == profile.name)
     {
-        println!("✓ {} already in UTM ({})", profile.box_name, entry.uuid);
+        println!("✓ {} already in UTM ({})", profile.name, entry.uuid);
         return Ok((entry.uuid, entry.name));
     }
 
-    println!("→ {} not found in UTM — importing...", profile.box_name);
+    println!("→ {} not found in UTM — importing...", profile.name);
     let box_path = download_box(profile)?;
-    let utm_bundle = extract_box(&box_path, profile)?;
-    import_utm_bundle(&utm_bundle)
+    let cached_bundle = extract_box(&box_path, profile)?;
+    let prepared = prepare_bundle_for_import(&cached_bundle, profile)?;
+    let result = import_utm_bundle(&prepared);
+    // Best-effort cleanup of the prepared copy; UTM has its own copy now.
+    let _ = std::fs::remove_dir_all(&prepared);
+    result
+}
+
+// ── Bundle preparation: per-profile copy + plist Name rewrite ───────────────
+
+fn prepare_bundle_for_import(cached: &Path, profile: &VmProfile) -> Result<PathBuf> {
+    let imports = cache_dir()?.join("imports");
+    std::fs::create_dir_all(&imports)?;
+    let target = imports.join(format!("{}.utm", profile.name));
+
+    // Wipe stale prepared copy from a prior failed run.
+    let _ = std::fs::remove_dir_all(&target);
+
+    println!("→ Preparing bundle for import (renaming to '{}')...", profile.name);
+    let status = std::process::Command::new("cp")
+        .args(["-a"])
+        .arg(cached)
+        .arg(&target)
+        .status()
+        .context("running cp -a to copy bundle")?;
+    if !status.success() {
+        bail!("cp -a {} -> {} failed", cached.display(), target.display());
+    }
+
+    rewrite_plist_name(&target.join("config.plist"), profile.name)?;
+    Ok(target)
+}
+
+fn rewrite_plist_name(plist_path: &Path, new_name: &str) -> Result<()> {
+    let xml = std::fs::read_to_string(plist_path)
+        .with_context(|| format!("reading {}", plist_path.display()))?;
+
+    // The bundle's config.plist has a single <key>Name</key> inside the
+    // Information dict. Locate the matching <string>...</string> and replace.
+    let key = "<key>Name</key>";
+    let key_pos = xml
+        .find(key)
+        .with_context(|| format!("'<key>Name</key>' not found in {}", plist_path.display()))?;
+    let after_key = &xml[key_pos + key.len()..];
+    let str_open_rel = after_key
+        .find("<string>")
+        .context("expected <string> after Name key")?;
+    let content_start = key_pos + key.len() + str_open_rel + "<string>".len();
+    let str_close_rel = xml[content_start..]
+        .find("</string>")
+        .context("expected </string> closing Name value")?;
+    let content_end = content_start + str_close_rel;
+
+    let mut out = String::with_capacity(xml.len() + new_name.len());
+    out.push_str(&xml[..content_start]);
+    out.push_str(new_name);
+    out.push_str(&xml[content_end..]);
+    std::fs::write(plist_path, out)
+        .with_context(|| format!("writing {}", plist_path.display()))?;
+    Ok(())
 }
 
 // ── Download ─────────────────────────────────────────────────────────────────
@@ -229,6 +291,16 @@ fn extract_box(box_path: &Path, profile: &VmProfile) -> Result<PathBuf> {
     Ok(bundle)
 }
 
+fn verify_imported_bundle(display_name: &str) -> bool {
+    dirs::home_dir()
+        .map(|home| {
+            home.join("Library/Containers/com.utmapp.UTM/Data/Documents")
+                .join(format!("{display_name}.utm"))
+                .exists()
+        })
+        .unwrap_or(false)
+}
+
 fn find_utm_bundle(dir: &Path) -> Result<PathBuf> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -281,6 +353,20 @@ fn import_utm_bundle(bundle: &Path) -> Result<(String, String)> {
         std::thread::sleep(Duration::from_secs(2));
         for entry in utm::list_vms()? {
             if !before.contains(&entry.uuid) {
+                // Verify UTM actually placed the bundle on disk. If the move
+                // collided (e.g. with a stale orphan), UTM may register a UUID
+                // but leave it half-broken. Bail loudly so the user knows.
+                if !verify_imported_bundle(&entry.name) {
+                    let _ = std::process::Command::new(utm::UTMCTL)
+                        .args(["delete", &entry.uuid])
+                        .status();
+                    bail!(
+                        "UTM registered '{}' ({}) but its bundle is missing from \
+                         ~/Library/Containers/com.utmapp.UTM/Data/Documents — \
+                         likely a name collision. Cleaned up the orphan; please retry.",
+                        entry.name, entry.uuid
+                    );
+                }
                 println!("✓ Imported: {} ({})", entry.name, entry.uuid);
                 return Ok((entry.uuid, entry.name));
             }
