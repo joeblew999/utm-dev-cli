@@ -3,71 +3,162 @@
 Rust CLI rewrite of [utm-dev](https://github.com/joeblew999/utm-dev) TypeScript tasks.
 Binary name: `utm-dev`. Published to crates.io so consuming repos install via `cargo:utm-dev`.
 
-## Goal
+## Golden rule: dovetail with UTM, don't fight it
 
-Once complete, thin bash wrappers in `joeblew999/.github//mise-tasks/vm/` will delegate to
-this binary. All repos get cross-platform VM builds via the single `.github` include — no
-separate utm-dev TypeScript include needed.
+UTM manages VM display, drivers, storage, and hardware configuration. `utm-dev` only
+orchestrates **lifecycle** (start/stop), **networking** (port forwards via AppleScript),
+and **remote execution** (SSH). Never try to fix display issues, install guest OS drivers,
+or reconfigure hardware from code — those are UTM's job.
+
+## Box source
+
+Boxes come from the **`utm` Vagrant Cloud registry** — pre-built UTM VMs with VirtIO
+drivers, WinRM (Windows), and SSH already configured:
+
+```
+https://app.vagrantup.com/utm/{box_name}                  (browse)
+https://api.cloud.hashicorp.com/vagrant/2022-09-30/registry/utm/box/{box_name}/versions  (latest version)
+https://api.cloud.hashicorp.com/vagrant/2022-09-30/registry/utm/box/{box_name}/version/{ver}/provider/utm/architecture/arm64/download  (download URL)
+```
+
+Box names: `windows-11`, `ubuntu-24.04`, `debian-12`
+Box format: `.tar.gz` (a renamed `.box`) containing a `.utm` bundle directory.
+Cache: `~/.cache/utm-dev/{box_name}_{version}_arm64.box`
+
+## UTM AppleScript: correct import call
+
+```applescript
+tell application "UTM" to import new virtual machine from POSIX file "/path/to/vm.utm"
+```
+
+NOT `open POSIX file` — that does something different. After import, snapshot UUIDs
+before/after to detect which UUID was just created (UTM doesn't return it directly).
 
 ## Architecture
 
 ```
 src/
-  main.rs          entry point — calls cli::run(), prints errors
-  cli.rs           clap CLI definition (Commands enum)
+  main.rs             entry point
+  cli.rs              clap Commands enum
   cmd/
-    mod.rs
-    doctor.rs      ✓ implemented — checks tool availability via which()
-    platform.rs    stubs — mac/ios/android/windows/linux/all subcommands
-    vm.rs          stubs — vm up/down/build/exec/delete/package
+    doctor.rs   ✓     checks tool availability via which()
+    platform.rs       stubs — mac/ios/android/windows/linux/all
+    vm.rs       ✓     up / down / exec / adopt / ls implemented
+  vm/
+    mod.rs      ✓
+    profiles.rs ✓     5 static profiles (box names, ports, credentials)
+    state.rs    ✓     .mise/state/vm-{name}.json — uuid + display_name
+    utm.rs      ✓     ensure_utm, list_vms, start_vm, stop_vm, wait_for_boot,
+                      configure_network (AppleScript), configure_resources
+    ssh.rs      ✓     connect (agent → key files → password), exec, exec_with_exit,
+                      upload (SCP), check
+    import.rs   ✓     Vagrant Cloud API download, extract, import via AppleScript
+    bootstrap.rs ✓    Linux SSH bootstrap (apt + mise + Rust); Windows stub
 ```
 
-## Command surface
+## VM profiles
+
+| Profile | Box | OS | SSH | WinRM | RAM |
+|---|---|---|---|---|---|
+| windows-build | windows-11 | Windows ARM64 | 2222 | 5985 | 12288 MiB |
+| windows-test  | windows-11 | Windows ARM64 | 2322 | 6985 | 4096 MiB  |
+| linux-build   | ubuntu-24.04 | Linux ARM64 | 2422 | — | 4096 MiB |
+| linux-test    | ubuntu-24.04 | Linux ARM64 | 2522 | — | 2048 MiB |
+| linux-dev     | debian-12  | Linux ARM64 (GNOME) | 2622 | — | 6144 MiB |
+
+Credentials: `vagrant` / `vagrant` for all. Boxes pre-configure WinRM on Windows.
+
+## vm adopt — for existing non-Vagrant VMs
+
+If the user already has a UTM VM (e.g. `plat-windows`) that isn't from the Vagrant registry:
+
+```bash
+utm-dev vm adopt --name windows-build --utm-name plat-windows
+```
+
+This writes `.mise/state/vm-windows-build.json` and skips the download/import step.
+The user must have set up the VM in UTM themselves (VirtIO drivers, SSH, port forwards).
+
+**Black screen on non-Vagrant Windows VMs**: means VirtIO GPU driver is missing.
+Fix via UTM's GUI (attach VirtIO driver ISO from VM settings → Drives) — do NOT try
+to fix this from code.
+
+## vm up flow
 
 ```
-utm-dev doctor                          # check tools
-utm-dev setup                           # install platform deps
-utm-dev init                            # scaffold mise.toml
-utm-dev mac dev|build
-utm-dev ios sim|xcode|build
-utm-dev android sim|studio|build
-utm-dev windows build [--release]       # delegates to vm build --name windows-11
-utm-dev linux dev|build [--release]     # delegates to vm build --name ubuntu-24.04
-utm-dev all build
-utm-dev vm up|down|build|exec|delete|package --name <profile>
-utm-dev clean [--deep]
-utm-dev icon
+ensure_utm()
+  → if no state: import::ensure_imported()  ← Vagrant Cloud download + AppleScript import
+  → configure_network() + configure_resources()
+  → start_vm(display_name)           ← uses state.display_name, NOT profile.box_name
+  → wait_for_boot()                  ← WinRM (Windows) or SSH (Linux)
+  → bootstrap::run()                 ← Linux: apt + mise + Rust; Windows: OpenSSH via WinRM
+  → state::save()
 ```
 
-## Implementation order
+## SSH auth order
 
-1. `doctor` ✓ — read-only, validates the pattern
-2. `vm up` / `vm down` — SSH + utmctl foundation everything else needs
-3. `vm exec` — SSH command execution
-4. `vm build` — sync code + run cargo tauri build + pull artifacts
-5. `windows build` / `linux build` — thin wrappers around vm build
-6. `setup` / `init` / `doctor` enhancements
+1. SSH agent (macOS Keychain / ssh-agent)
+2. Key files: `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, `~/.ssh/id_ecdsa`
+3. Password from profile (fallback)
 
-## Key dependencies
-
-- `clap` (derive) — CLI parsing
-- `which` — tool detection (doctor)
-- `ssh2` — VM SSH (vm exec, vm build) — add when implementing vm commands
-- `reqwest` — WinRM bootstrap for Windows VM — add when implementing vm up for windows
-- `serde` / `serde_json` — VM state files (~/.cache/utm-dev/vm-<name>.json)
-- `anyhow` — error propagation
-
-## VM state model
-
-Port from TypeScript `_lib.ts`. State persisted to `~/.cache/utm-dev/vm-<name>.json`:
-- `uuid` — UTM VM UUID (set after import)
-- `display_name` — UTM display name
-- `ssh_host` / `ssh_port` / `ssh_user` / `ssh_password`
-- `status` — running | stopped | not-imported
+Windows VMs from the Vagrant registry have SSH pre-configured with the `vagrant` password.
 
 ## Conventions
 
-- All commands return `anyhow::Result<()>`
-- Print progress with `println!("→ ...")`, success with `"✓ ..."`, errors with `"✗ ..."`
-- Unimplemented commands use `todo!("...")` — they panic with a clear message
-- Never `unwrap()` in user-facing paths — propagate with `?` or `anyhow::bail!`
+- Return `anyhow::Result<()>` from all commands
+- Progress: `println!("→ ...")`, success: `println!("✓ ...")`, fatal: `anyhow::bail!(...)`
+- Unimplemented: `todo!("clear message")`
+- Never `unwrap()` in user-facing paths
+- State files use actual UTM display names — `state.display_name` may differ from `profile.box_name`
+
+## Implementation status
+
+| Command | Status |
+|---|---|
+| `doctor` | ✓ |
+| `vm ls` | ✓ |
+| `vm adopt` | ✓ |
+| `vm up` | ✓ (import + bootstrap + idempotent re-runs) |
+| `vm down` | ✓ |
+| `vm exec` | ✓ |
+| `vm build` | ✓ (sync → build → pull artifacts) |
+| `vm delete` | ✓ (utmctl + AppleScript fallback) |
+| `vm package` | ✓ (export as Vagrant .box) |
+| `setup` / `init` | stub |
+
+## vm build flow
+
+```
+ssh::connect()            ← auto-starts VM if not reachable
+tar (exclude target/.git/node_modules) → SCP upload → untar on VM
+mise trust && mise install            ← idempotent tool install
+mise run build                        ← Tauri build
+tar artifacts on VM → SCP download → extract to .build/{platform}/
+```
+
+Artifacts land in `<project>/.build/windows/*.{msi,exe}` or `.build/linux/*.{deb,AppImage,rpm}`.
+
+## WinRM bootstrap flow
+
+Implemented in `src/vm/winrm.rs` (pure Rust SOAP client, no pywinrm).
+Called from `bootstrap::run` for Windows VMs.
+
+```
+winrm.ping()                                    ← check WinRM reachable
+Add-WindowsCapability OpenSSH.Server (elevated) ← SYSTEM scheduled task
+Start-Service sshd / Set-Service Automatic
+Set administrators_authorized_keys              ← host public key
+Write minimal sshd_config
+LocalAccountTokenFilterPolicy = 1
+irm https://mise.run/install.ps1 | iex          ← mise
+```
+
+## Linux bootstrap (idempotent)
+
+```
+dpkg -s build-essential    → install if missing
+dpkg -s libwebkit2gtk-4.1-dev → Tauri deps if missing  
+mise --version             → install if missing
+rustc --version            → mise use rust@stable if missing
+linux-dev: xdg-utils + GNOME check
+```
