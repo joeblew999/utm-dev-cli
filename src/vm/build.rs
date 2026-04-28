@@ -39,6 +39,12 @@ fn triples(target: BuildTarget, os: GuestOs) -> Vec<&'static str> {
 
 pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Result<()> {
     let total_start = Instant::now();
+
+    // Pre-flight: verify the project's mise.toml declares the toolchain we need.
+    // Without rust + tauri-cli pinned, mise install inside the VM will either
+    // skip what we need or compile against the wrong default. Bail in 50 ms
+    // here instead of after 25 min in the VM.
+    preflight_mise_toml(project_dir)?;
     let project_name = project_dir
         .file_name()
         .context("project dir has no name")?
@@ -196,7 +202,13 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         format!(r#"{mkdir_log} && {linux_tee}cd "{vm_project_dir}" && {mise} trust --yes && {mise} install"#)
     };
     let code = ssh::exec_streaming(profile, &install_cmd)?;
-    if code != 0 { bail!("mise install failed inside VM (exit {code}) — see: utm-dev vm logs --name {}", profile.name); }
+    if code != 0 {
+        dump_build_log_errors(profile);
+        bail!(
+            "mise install failed inside VM (exit {code}). Full log: utm-dev vm logs --name {}",
+            profile.name
+        );
+    }
     println!("✓ Tools installed  ⌚ mise install: {}", fmt_elapsed(t_install.elapsed()));
 
     // Linux x86_64 cross-compile prep: ensure multiarch + amd64 system libs.
@@ -280,8 +292,9 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         let t_build = Instant::now();
         let code = ssh::exec_streaming(profile, &build_cmd)?;
         if code != 0 {
+            dump_build_log_errors(profile);
             bail!(
-                "Build failed for {triple} (exit {code}) — see: utm-dev vm logs --name {}",
+                "Build failed for {triple} (exit {code}). Full log: utm-dev vm logs --name {}",
                 profile.name
             );
         }
@@ -364,6 +377,68 @@ fn arch_label_for(triple: &str) -> &'static str {
         "x86_64-unknown-linux-gnu"    => "x86_64",
         _                              => "unknown",
     }
+}
+
+/// Pre-flight validation: ensure the project's mise.toml declares the
+/// toolchain we need. We only check for the markers; full TOML parsing
+/// adds a dependency that's not worth the cost for a substring match.
+fn preflight_mise_toml(project_dir: &Path) -> Result<()> {
+    let path = project_dir.join("mise.toml");
+    if !path.exists() {
+        bail!(
+            "no mise.toml in {}. Run `utm-dev init` to scaffold one.",
+            project_dir.display()
+        );
+    }
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading {}", path.display()))?;
+
+    let has_rust = content.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("rust ") || t.starts_with("rust=") || t.starts_with("rust\t")
+    });
+    let has_tauri_cli = content.contains("tauri-cli");
+
+    let mut missing: Vec<&str> = Vec::new();
+    if !has_rust { missing.push("rust"); }
+    if !has_tauri_cli { missing.push("\"cargo:tauri-cli\""); }
+    if !missing.is_empty() {
+        bail!(
+            "mise.toml is missing required pins: {}.\n  \
+             Add to [tools]:\n    \
+             rust              = \"stable\"\n    \
+             \"cargo:tauri-cli\" = \"2\"\n  \
+             Or run: utm-dev init",
+            missing.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// On build failure, fetch the tail of the build log from inside the VM
+/// and print just the error stanzas. Best-effort — if the VM can't be
+/// reached we just skip and let the bail message do the work.
+fn dump_build_log_errors(profile: &VmProfile) {
+    let log_path = match profile.os {
+        GuestOs::Linux   => "~/.utm-dev-build/build.log",
+        GuestOs::Windows => r"%USERPROFILE%\.utm-dev-build\build.log",
+    };
+    let cmd = match profile.os {
+        GuestOs::Linux => format!(
+            "grep -niE -A 5 -B 1 \
+             '(^error[:[ ]|^error\\[E[0-9]+\\]|^FAILED|^Failed |panic|fatal error|mise ERROR|unresolved external symbol|LNK[0-9]+|cannot find -l|linker .* not found)' \
+             {log_path} 2>/dev/null | tail -n 80"
+        ),
+        GuestOs::Windows => format!(
+            r#"powershell -NoProfile -Command "if (Test-Path '{log_path}') {{ \
+                Get-Content '{log_path}' | Select-String -Pattern '^error[:[ ]|^error\[E[0-9]+\]|^FAILED|panic|fatal error|mise ERROR|unresolved external symbol|LNK[0-9]+|cannot find -l|linker .* not found' -Context 1,5 -CaseSensitive:$false | \
+                Select-Object -Last 12 | ForEach-Object {{ $_.Context.PreContext + $_.Line + $_.Context.PostContext + '---' }} \
+              }} else {{ '(no build log)' }}""#
+        ),
+    };
+    eprintln!("\n── Last error stanzas (from {} build log) ──", profile.name);
+    let _ = ssh::exec_streaming(profile, &cmd);
+    eprintln!("─────────────────────────────────────────────────");
 }
 
 /// Per-triple env prefix for cargo tauri build on Linux. Currently only
