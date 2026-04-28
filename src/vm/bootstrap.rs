@@ -255,10 +255,19 @@ Restart-Service sshd -ErrorAction SilentlyContinue
 
     // ── Full mode: dev tools ────────────────────────────────────────────────
 
-    // Step 4: VS Build Tools with C++ workload (needed by Rust/MSVC on Windows)
+    // Step 4: VS Build Tools with C++ workload + native ARM64 compiler.
+    // The VCTools workload + --includeRecommended installs the x64 host
+    // toolchain, NOT the ARM64-hosted ARM64 compiler. On a Windows ARM64
+    // VM, `cargo build` (which targets aarch64-pc-windows-msvc by default)
+    // and VsDevCmd with `-arch=arm64 -host_arch=arm64` both need
+    // Microsoft.VisualStudio.Component.VC.Tools.ARM64 explicitly.
+    //
+    // The VS bootstrapper handles fresh-install and modify-existing with
+    // the same `--add` flag, so we always pass both components and let the
+    // installer no-op what's already there.
     let vswhere = r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe";
     let vc_check = w.run_ps(&format!(
-        r#"if (Test-Path '{vswhere}') {{ & '{vswhere}' -products * -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null }} else {{ '' }}"#
+        r#"if (Test-Path '{vswhere}') {{ & '{vswhere}' -products * -latest -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath 2>$null }} else {{ '' }}"#
     ))?;
     if vc_check.stdout.trim().is_empty() {
         println!("  Downloading VS Build Tools bootstrapper...");
@@ -266,17 +275,20 @@ Restart-Service sshd -ErrorAction SilentlyContinue
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile 'C:\vs_buildtools.exe' -UseBasicParsing
 ")?;
-        println!("  Installing VS Build Tools + C++ workload (10-15 min on ARM64)...");
+        println!("  Installing VS Build Tools + C++ workload + ARM64 compiler (10-15 min on ARM64)...");
         w.run_elevated(r"
 $p = Start-Process -FilePath 'C:\vs_buildtools.exe' -ArgumentList @(
     '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+    '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
+    '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+    '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.22621',
     '--includeRecommended', '--quiet', '--norestart', '--wait'
 ) -Wait -NoNewWindow -PassThru
 $p.ExitCode | Out-File 'C:\vs-exit.txt'
-", 1200)?;
-        println!("  ✓ VS Build Tools installed");
+", 1800)?;
+        println!("  ✓ VS Build Tools installed (with ARM64 toolchain)");
     } else {
-        println!("  ✓ VS Build Tools already installed");
+        println!("  ✓ VS Build Tools already installed (ARM64 toolchain present)");
     }
 
     // Step 5: WebView2 Runtime (required by Tauri)
