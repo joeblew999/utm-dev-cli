@@ -28,6 +28,29 @@ pub enum VmCommands {
         /// Command to run (quoted as a single string)
         cmd: Vec<String>,
     },
+    /// Open an interactive SSH shell in a VM
+    Shell {
+        #[arg(long, help = "VM profile name")]
+        name: String,
+    },
+    /// Copy file or directory from host to VM (scp -r)
+    Push {
+        #[arg(long, help = "VM profile name")]
+        name: String,
+        #[arg(long, help = "Local path on host")]
+        from: String,
+        #[arg(long, help = "Destination path on VM")]
+        to:   String,
+    },
+    /// Copy file or directory from VM to host (scp -r)
+    Pull {
+        #[arg(long, help = "VM profile name")]
+        name: String,
+        #[arg(long, help = "Source path on VM")]
+        from: String,
+        #[arg(long, help = "Local destination path on host")]
+        to:   String,
+    },
     /// Wire an existing UTM VM to a profile (skips download/import)
     Adopt {
         #[arg(long, help = "Profile name to assign (windows-build | linux-build | …)")]
@@ -54,6 +77,9 @@ pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
         VmCommands::Up { name }             => vm_up(&name),
         VmCommands::Down { name }           => vm_down(&name),
         VmCommands::Exec { name, cmd }      => vm_exec(&name, &cmd.join(" ")),
+        VmCommands::Shell { name }          => vm_shell(&name),
+        VmCommands::Push { name, from, to } => vm_push(&name, &from, &to),
+        VmCommands::Pull { name, from, to } => vm_pull(&name, &from, &to),
         VmCommands::Adopt { name, utm_name } => vm_adopt(&name, &utm_name),
         VmCommands::Ls                      => vm_ls(),
         VmCommands::Build { name, release } => vm_build(&name, release),
@@ -181,6 +207,56 @@ fn vm_exec(name: &str, cmd: &str) -> anyhow::Result<()> {
     if code != 0 {
         std::process::exit(code);
     }
+    Ok(())
+}
+
+// ── vm shell / vm push / vm pull (delegate to ssh + scp) ────────────────────
+
+fn vm_shell(name: &str) -> anyhow::Result<()> {
+    let profile = profiles::get(name)?;
+    ssh::check(profile)?;
+    let target = format!("{}@localhost", profile.user);
+    let status = std::process::Command::new("ssh")
+        .args(["-p", &profile.ssh_port.to_string(), "-t",
+               "-o", "StrictHostKeyChecking=no",
+               "-o", "UserKnownHostsFile=/dev/null",
+               "-o", "LogLevel=ERROR"])
+        .arg(&target)
+        .status()
+        .map_err(|e| anyhow::anyhow!("failed to spawn ssh: {e}"))?;
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
+}
+
+fn vm_push(name: &str, from: &str, to: &str) -> anyhow::Result<()> {
+    let profile = profiles::get(name)?;
+    ssh::check(profile)?;
+    println!("→ Pushing {} → {}:{}", from, profile.name, to);
+    scp_run(profile, from, &format!("{}@localhost:{}", profile.user, to))
+}
+
+fn vm_pull(name: &str, from: &str, to: &str) -> anyhow::Result<()> {
+    let profile = profiles::get(name)?;
+    ssh::check(profile)?;
+    println!("→ Pulling {}:{} → {}", profile.name, from, to);
+    scp_run(profile, &format!("{}@localhost:{}", profile.user, from), to)
+}
+
+fn scp_run(profile: &profiles::VmProfile, src: &str, dst: &str) -> anyhow::Result<()> {
+    let status = std::process::Command::new("scp")
+        .args(["-r", "-P", &profile.ssh_port.to_string(),
+               "-o", "StrictHostKeyChecking=no",
+               "-o", "UserKnownHostsFile=/dev/null",
+               "-o", "LogLevel=ERROR",
+               src, dst])
+        .status()
+        .map_err(|e| anyhow::anyhow!("failed to spawn scp: {e}"))?;
+    if !status.success() {
+        anyhow::bail!("scp exited {}", status);
+    }
+    println!("✓ done");
     Ok(())
 }
 
