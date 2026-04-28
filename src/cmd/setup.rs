@@ -21,12 +21,20 @@ const AVD_NAME:            &str = "utm-dev";
 pub fn run() -> Result<()> {
     println!("═══ utm-dev setup ═══");
 
-    if cfg!(target_os = "linux") {
-        setup_linux()
-    } else if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") {
         setup_macos()
+    } else if cfg!(target_os = "linux") {
+        // Linux setup here is for a Linux *host* (e.g. for the linux-dev
+        // case where someone is doing GUI work on the Linux VM directly).
+        // utm-dev VM orchestration itself requires macOS — UTM doesn't run
+        // anywhere else.
+        setup_linux()
     } else {
-        bail!("setup not supported on this platform")
+        bail!(
+            "utm-dev setup is supported on macOS (full) and Linux (host deps only). \
+             VM orchestration commands (vm up/build/...) require macOS — UTM doesn't \
+             run on Windows or Linux hosts."
+        )
     }
 }
 

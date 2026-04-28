@@ -79,25 +79,22 @@ fn linux(session: &ssh2::Session, profile: &VmProfile) -> Result<()> {
     run_step(session, "activate mise in .bashrc",
         r#"grep -q 'mise activate' ~/.bashrc || echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc"#)?;
 
-    // Step 4: Rust via mise
-    let rust = ssh::exec(session,
-        "~/.cargo/bin/rustc --version 2>/dev/null || rustc --version 2>/dev/null || echo missing"
-    ).unwrap_or_default();
-    if rust.contains("missing") || rust.is_empty() {
-        run_step(session, "install Rust", "~/.local/bin/mise use --global rust@stable")?;
-    } else {
-        println!("  ✓ Rust already installed ({})", rust.trim());
-    }
+    // (Rust is installed by the project's mise.toml at vm build time, not
+    // here — see AGENTS.md "Source-of-truth invariant for VM bootstrap".)
 
-    // Step 5: linux-dev extras (Debian 12 with GNOME)
+    // Step 4: linux-dev extras (Debian 12 with GNOME).
+    // Marker is fonts-noto-color-emoji because xdg-utils is already
+    // installed for ALL Linux profiles by step 2.
     if profile.name == "linux-dev" {
-        let xdg = ssh::exec(session,
-            "dpkg -s xdg-utils 2>/dev/null | grep -c 'ok installed'"
+        let emoji = ssh::exec(session,
+            "dpkg -s fonts-noto-color-emoji 2>/dev/null | grep -c 'ok installed'"
         ).unwrap_or_default();
-        if xdg.trim() != "1" {
-            run_step(session, "install desktop extras",
+        if emoji.trim() != "1" {
+            run_step(session, "install desktop extras (fonts-noto-color-emoji)",
                 "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-                 xdg-utils fonts-noto-color-emoji")?;
+                 fonts-noto-color-emoji")?;
+        } else {
+            println!("  ✓ desktop extras already installed");
         }
     }
 
@@ -318,6 +315,43 @@ $p.ExitCode | Out-File 'C:\vs-exit.txt'
         println!("  ✓ mise installed");
     } else {
         println!("  ✓ mise already installed");
+    }
+
+    // Step 7: switch rustup default-host to x86_64.
+    //
+    // VS Build Tools on ARM64 Windows hosts ships only Hostarm64\x64 and
+    // Hostarm64\x86 cross-tools — there's no Hostarm64\arm64 native
+    // toolchain at the time of writing. So a project's `mise.toml` declaring
+    // `rust = "stable"` would otherwise install the host-default
+    // `aarch64-pc-windows-msvc` toolchain, which fails to link anything
+    // (no ARM64 link.exe). By forcing rustup's default-host to x86_64 here
+    // BEFORE any project's mise install runs, the toolchain mise installs
+    // is x86_64 — which links cleanly with Hostarm64\x64\link.exe and runs
+    // under Windows ARM64's native x64 emulation.
+    //
+    // This is the one place we touch a runtime tool's config, and only
+    // because the alternative is "Windows builds don't work at all on this
+    // VM until each user discovers and works around it themselves."
+    let arch = w.run_ps("$env:PROCESSOR_ARCHITECTURE")?;
+    if arch.stdout.trim() == "ARM64" {
+        // Use rustup that mise wires up. mise installs rust under
+        // %USERPROFILE%\.local\share\mise\installs\rust\<ver>\rustup.exe or
+        // (on this image) D:\mise\installs\rust\stable\rustup.exe — cover
+        // both. We don't run this if rustup isn't anywhere yet; mise will
+        // place it later and we'll set the host then. But if rust is
+        // already managed by mise, switch the default host now.
+        w.run_ps(r#"
+$candidates = @(
+  'D:\mise\installs\rust\stable\rustup.exe',
+  "$env:USERPROFILE\.local\share\mise\installs\rust\stable\rustup.exe"
+)
+$rustup = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($rustup) {
+  & $rustup set default-host x86_64-pc-windows-msvc
+  & $rustup default --force-non-host stable-x86_64-pc-windows-msvc
+}
+"#)?;
+        println!("  ✓ rustup default-host set to x86_64-pc-windows-msvc (ARM64 host workaround)");
     }
 
     println!("✓ Windows bootstrap complete");

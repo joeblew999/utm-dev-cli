@@ -15,6 +15,11 @@ pub enum VmCommands {
         #[arg(long, help = "VM profile name")]
         name: String,
     },
+    /// Restart a VM (vm down + vm up; preserves bootstrap state)
+    Restart {
+        #[arg(long, help = "VM profile name")]
+        name: String,
+    },
     /// Build app in a VM (auto-starts if needed, syncs code, pulls artifacts)
     Build {
         #[arg(long, help = "VM profile name")]
@@ -97,6 +102,7 @@ pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
     match cmd {
         VmCommands::Up { name }             => vm_up(&name),
         VmCommands::Down { name }           => vm_down(&name),
+        VmCommands::Restart { name }        => { vm_down(&name)?; vm_up(&name) }
         VmCommands::Exec { name, cmd }      => vm_exec(&name, &cmd.join(" ")),
         VmCommands::Shell { name }          => vm_shell(&name),
         VmCommands::Logs { name, kind, follow } => vm_logs(&name, &kind, follow),
@@ -621,7 +627,11 @@ fn vm_package(name: &str) -> anyhow::Result<()> {
 
     let box_gb = std::fs::metadata(&box_file)?.len() as f64 / 1_073_741_824.0;
     println!("✓ Box: {} ({:.1} GB)", box_file.display(), box_gb);
-    println!("  To publish: vagrant cloud publish joeblew999/{}-{name} 1.0.0 utm {}", profile.box_name, box_file.display());
+    println!(
+        "  To publish: vagrant cloud publish <username>/{}-{name} 1.0.0 utm {}",
+        profile.box_name,
+        box_file.display(),
+    );
     Ok(())
 }
 

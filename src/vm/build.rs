@@ -158,12 +158,25 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
 
     println!("→ Running mise install in VM (persistent log at {log_path_h})...");
     let install_cmd = if profile.os == GuestOs::Windows {
-        // CARGO_BUILD_TARGET forces cargo to target x86_64 for everything mise
-        // builds (notably tauri-cli) — without it, cargo defaults to the host
-        // triple (aarch64-pc-windows-msvc) and link.exe fails with no ARM64
-        // tools available.
+        // Two-phase mise install on ARM64 Windows:
+        //   1. `mise install rust` — installs rustup + the project's pinned
+        //      rust version. mise's rust plugin defers to rustup, which
+        //      defaults to the host arch (aarch64-pc-windows-msvc).
+        //   2. Switch rustup's default-host + active toolchain to x86_64.
+        //      The aarch64 toolchain stays installed but inactive.
+        //   3. `mise install` (rest) — anything that compiles via cargo
+        //      (notably cargo:tauri-cli) now uses the x86_64 toolchain and
+        //      links cleanly with Hostarm64\x64\link.exe.
+        //
+        // Why this is needed: Microsoft's VS Build Tools doesn't ship a
+        // native ARM64-host-targeting-ARM64 MSVC toolchain
+        // (Hostarm64\arm64\link.exe). Without that, an aarch64 Rust
+        // toolchain has no linker. We pivot the entire build to x64 and
+        // run under Windows ARM64's native x64 emulation. The .msi/.exe
+        // produced are x86_64 — what most Windows users actually ship.
+        let switch_rustup = r#"powershell -NoProfile -Command "$rustup = (& mise where rust 2>$null) + '\\rustup.exe'; if (Test-Path $rustup) { & $rustup set default-host x86_64-pc-windows-msvc; & $rustup default --force-non-host stable-x86_64-pc-windows-msvc }""#;
         format!(
-            r#"{mkdir_log} & cd /d "{vm_project_dir}" && set CARGO_BUILD_TARGET=x86_64-pc-windows-msvc && ({win_msvc_x64} && {mise} trust --yes && {mise} install) >> "{log_path_h}" 2>&1"#
+            r#"{mkdir_log} & cd /d "{vm_project_dir}" && ({win_msvc_x64} && {mise} trust --yes && {mise} install rust && {switch_rustup} && {mise} install) >> "{log_path_h}" 2>&1"#
         )
     } else {
         format!(r#"{mkdir_log} && {linux_tee}cd "{vm_project_dir}" && {mise} trust --yes && {mise} install"#)
@@ -174,13 +187,21 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
 
     // Resolve CARGO_TARGET_DIR once. cargo per-target output goes to
     // {target_dir}/{triple}/release/bundle.
+    //
+    // Use fenced markers (BEGIN_/END_) so we don't accidentally pick up
+    // shell prompts, login banners, or other stray output.
     let probe = if profile.os == GuestOs::Windows {
-        r#"if defined CARGO_TARGET_DIR (echo %CARGO_TARGET_DIR%) else (echo DEFAULT)"#.to_string()
+        r#"echo BEGIN_CTD & if defined CARGO_TARGET_DIR (echo %CARGO_TARGET_DIR%) else (echo DEFAULT) & echo END_CTD"#.to_string()
     } else {
-        r#"echo "${CARGO_TARGET_DIR:-DEFAULT}""#.to_string()
+        r#"echo BEGIN_CTD; echo "${CARGO_TARGET_DIR:-DEFAULT}"; echo END_CTD"#.to_string()
     };
     let (probe_out, _) = ssh::exec_with_exit(&session, &probe)?;
-    let target_dir_raw = probe_out.trim().lines().last().unwrap_or("DEFAULT").trim();
+    let target_dir_raw = probe_out
+        .lines()
+        .skip_while(|l| l.trim() != "BEGIN_CTD")
+        .nth(1)
+        .map(|l| l.trim())
+        .unwrap_or("DEFAULT");
     let target_root = if target_dir_raw == "DEFAULT" || target_dir_raw.is_empty() {
         format!("{vm_project_dir}{sep}src-tauri{sep}target")
     } else {
