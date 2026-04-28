@@ -52,7 +52,7 @@ pub enum VmCommands {
         #[arg(long, help = "VM profile name")]
         name: String,
     },
-    /// Tail logs from inside the VM (build, or runtime once vm run lands)
+    /// Tail logs from inside the VM (build, or runtime via vm run)
     Logs {
         #[arg(long, help = "VM profile name")]
         name: String,
@@ -60,6 +60,18 @@ pub enum VmCommands {
         kind: String,
         #[arg(long, help = "Follow (tail -f) instead of dumping the full log")]
         follow: bool,
+        /// Show only the last N lines (handy when builds fail — error is usually in the tail).
+        #[arg(long)]
+        tail: Option<u32>,
+        /// Filter to error stanzas with surrounding context. The fast path for "why did my build fail".
+        #[arg(long)]
+        errors: bool,
+    },
+    /// Run health checks inside the VM (mise, rust toolchain, VS components, …).
+    /// Use to debug "why didn't my build work" without wading through full logs.
+    Doctor {
+        #[arg(long, help = "VM profile name")]
+        name: String,
     },
     /// Copy file or directory from host to VM (scp -r)
     Push {
@@ -115,7 +127,8 @@ pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
         VmCommands::Restart { name }        => { vm_down(&name)?; vm_up(&name) }
         VmCommands::Exec { name, cmd }      => vm_exec(&name, &cmd.join(" ")),
         VmCommands::Shell { name }          => vm_shell(&name),
-        VmCommands::Logs { name, kind, follow } => vm_logs(&name, &kind, follow),
+        VmCommands::Logs { name, kind, follow, tail, errors } => vm_logs(&name, &kind, follow, tail, errors),
+        VmCommands::Doctor { name }         => vm_doctor(&name),
         VmCommands::Push { name, from, to } => vm_push(&name, &from, &to),
         VmCommands::Pull { name, from, to } => vm_pull(&name, &from, &to),
         VmCommands::Adopt { name, utm_name } => vm_adopt(&name, &utm_name),
@@ -360,9 +373,19 @@ fn vm_exec(name: &str, cmd: &str) -> anyhow::Result<()> {
 
 // ── vm shell / vm push / vm pull (delegate to ssh + scp) ────────────────────
 
-fn vm_logs(name: &str, kind: &str, follow: bool) -> anyhow::Result<()> {
+fn vm_logs(
+    name: &str,
+    kind: &str,
+    follow: bool,
+    tail: Option<u32>,
+    errors: bool,
+) -> anyhow::Result<()> {
     let profile = profiles::get(name)?;
     ssh::check(profile)?;
+
+    if follow && errors {
+        anyhow::bail!("--follow and --errors are mutually exclusive");
+    }
 
     let log_path = match (kind, &profile.os) {
         ("build", profiles::GuestOs::Linux)   => "~/.utm-dev-build/build.log".to_string(),
@@ -372,20 +395,114 @@ fn vm_logs(name: &str, kind: &str, follow: bool) -> anyhow::Result<()> {
         _ => anyhow::bail!("unknown kind '{kind}' (expected: build | run)"),
     };
 
-    let cmd = match (follow, &profile.os) {
-        (true,  profiles::GuestOs::Linux)   => format!("tail -F {log_path} 2>/dev/null"),
-        (false, profiles::GuestOs::Linux)   => format!("cat {log_path} 2>/dev/null || echo '(no log yet)'"),
-        (true,  profiles::GuestOs::Windows) => format!(
-            r#"powershell -NoProfile -Command "Get-Content '{log_path}' -Wait -Tail 1000""#
-        ),
-        (false, profiles::GuestOs::Windows) => format!(
-            r#"powershell -NoProfile -Command "if (Test-Path '{log_path}') {{ Get-Content '{log_path}' }} else {{ '(no log yet)' }}""#
-        ),
+    // Pattern shared between OSes: cargo / rust / mise / Tauri / MSVC / linker errors.
+    // Case-insensitive, line-anchored where useful.
+    let cmd = if errors {
+        match &profile.os {
+            profiles::GuestOs::Linux => format!(
+                // -E extended regex, -i ignore-case, -A/-B context, -n line numbers.
+                // Patterns chosen to catch cargo/rustc/mise/MSVC/linker without being noisy.
+                "grep -niE -A 5 -B 1 \
+                 '(^error[:[ ]|^error\\[E[0-9]+\\]|^FAILED|^Failed |panic|fatal error|mise ERROR|unresolved external symbol|LNK[0-9]+|LNK4272|cannot find -l|linker .* not found)' \
+                 {log_path} 2>/dev/null || echo '(no errors found in {log_path} — try `vm logs --tail 200`)'"
+            ),
+            profiles::GuestOs::Windows => format!(
+                r#"powershell -NoProfile -Command "if (Test-Path '{log_path}') {{ \
+                    $hits = Get-Content '{log_path}' | Select-String -Pattern '^error[:[ ]|^error\[E[0-9]+\]|^FAILED|panic|fatal error|mise ERROR|unresolved external symbol|LNK[0-9]+|cannot find -l|linker .* not found' -Context 1,5 -CaseSensitive:$false; \
+                    if ($hits) {{ $hits | ForEach-Object {{ $_.Context.PreContext + $_.Line + $_.Context.PostContext + '---' }} }} else {{ '(no errors found in {log_path} — try `vm logs --tail 200`)' }} \
+                  }} else {{ '(no log yet)' }}""#
+            ),
+        }
+    } else {
+        match (follow, tail, &profile.os) {
+            (true,  _,        profiles::GuestOs::Linux)   => format!("tail -F {log_path} 2>/dev/null"),
+            (false, Some(n),  profiles::GuestOs::Linux)   => format!("tail -n {n} {log_path} 2>/dev/null || echo '(no log yet)'"),
+            (false, None,     profiles::GuestOs::Linux)   => format!("cat {log_path} 2>/dev/null || echo '(no log yet)'"),
+            (true,  _,        profiles::GuestOs::Windows) => format!(
+                r#"powershell -NoProfile -Command "Get-Content '{log_path}' -Wait -Tail 1000""#
+            ),
+            (false, Some(n),  profiles::GuestOs::Windows) => format!(
+                r#"powershell -NoProfile -Command "if (Test-Path '{log_path}') {{ Get-Content '{log_path}' -Tail {n} }} else {{ '(no log yet)' }}""#
+            ),
+            (false, None,     profiles::GuestOs::Windows) => format!(
+                r#"powershell -NoProfile -Command "if (Test-Path '{log_path}') {{ Get-Content '{log_path}' }} else {{ '(no log yet)' }}""#
+            ),
+        }
     };
 
     let code = ssh::exec_streaming(profile, &cmd)?;
     if code != 0 && !follow {
         std::process::exit(code);
+    }
+    Ok(())
+}
+
+// ── vm doctor ────────────────────────────────────────────────────────────────
+
+fn vm_doctor(name: &str) -> anyhow::Result<()> {
+    let profile = profiles::get(name)?;
+    let session = ssh::connect(profile)
+        .map_err(|e| anyhow::anyhow!("cannot SSH to '{name}': {e:#}\n  → utm-dev vm up --name {name}"))?;
+
+    println!("══ utm-dev vm doctor — {} ══\n", name);
+
+    let checks: Vec<(&str, &str)> = match profile.os {
+        profiles::GuestOs::Linux => vec![
+            ("mise on PATH",
+             "command -v mise >/dev/null && mise --version || echo MISSING"),
+            ("apt build-essential",
+             "dpkg-query -W -f='${Status}' build-essential 2>/dev/null | grep -c 'ok installed' | grep -qx 1 && echo ok || echo MISSING"),
+            ("apt libwebkit2gtk-4.1-dev (Tauri)",
+             "dpkg-query -W -f='${Status}' libwebkit2gtk-4.1-dev 2>/dev/null | grep -c 'ok installed' | grep -qx 1 && echo ok || echo MISSING"),
+            ("apt libwebkit2gtk-4.1-dev:amd64 (multiarch x86_64)",
+             "dpkg-query -W -f='${Status}' libwebkit2gtk-4.1-dev:amd64 2>/dev/null | grep -c 'ok installed' | grep -qx 1 && echo ok || echo 'MISSING (run vm build --target x86-64 to install)'"),
+            ("apt gcc-x86-64-linux-gnu (cross linker)",
+             "command -v x86_64-linux-gnu-gcc >/dev/null && echo ok || echo MISSING"),
+            ("xvfb-run (vm run)",
+             "command -v xvfb-run >/dev/null && echo ok || echo MISSING"),
+        ],
+        profiles::GuestOs::Windows => vec![
+            ("mise on PATH",
+             "where mise 2>nul && mise --version || echo MISSING"),
+            ("VS Build Tools install path",
+             r#"if exist "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC" (echo ok) else (echo MISSING)"#),
+            ("VS Hostarm64\\x64 cross-tools (link.exe)",
+             r#"for /d %V in ("C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\*") do @if exist "%V\bin\Hostarm64\x64\link.exe" echo ok"#),
+            ("VS Hostarm64\\arm64 native tools (BLOCKED)",
+             r#"for /d %V in ("C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\*") do @if exist "%V\bin\Hostarm64\arm64\link.exe" (echo ok) else (echo BLOCKED_BY_MS)"#),
+            ("WebView2 Runtime",
+             r#"powershell -NoProfile -Command "if (winget list --id Microsoft.EdgeWebView2Runtime --accept-source-agreements 2>$null | Select-String 'EdgeWebView2') { 'ok' } else { 'MISSING' }""#),
+            ("rustup default-host = x86_64",
+             r#"powershell -NoProfile -Command "& (mise where rust 2>$null) + '\\rustup.exe' show 2>$null | Select-String 'Default host:.*x86_64'""#),
+        ],
+    };
+
+    let mut failed = 0;
+    for (label, cmd) in checks {
+        let out = ssh::exec(&session, cmd).unwrap_or_else(|e| format!("ERR {e}"));
+        let trimmed = out.trim();
+        let pass = !trimmed.is_empty()
+            && !trimmed.contains("MISSING")
+            && !trimmed.contains("BLOCKED_BY_MS")
+            && !trimmed.starts_with("ERR")
+            && !trimmed.contains("could not find")
+            && !trimmed.contains("not recognized");
+        if pass {
+            println!("  ✓ {label}");
+        } else {
+            failed += 1;
+            println!("  ✗ {label}");
+            for line in trimmed.lines().take(3) {
+                println!("      {line}");
+            }
+        }
+    }
+
+    println!();
+    if failed == 0 {
+        println!("✓ all checks passed");
+    } else {
+        println!("✗ {failed} check(s) failed");
     }
     Ok(())
 }
