@@ -2,5 +2,19 @@
 name = "utm-dev"
 version = "0.1.0"
 edition = "2024"
+description = "Cross-platform Tauri build orchestrator — manages UTM VMs for Windows/Linux builds on Apple Silicon"
+repository = "https://github.com/joeblew999/utm-dev-cli"
+license = "MIT"
+keywords = ["tauri", "utm", "cross-platform", "vm", "build"]
+categories = ["development-tools"]
+
+[[bin]]
+name = "utm-dev"
+path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4", features = ["derive", "cargo"] }
+which = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
