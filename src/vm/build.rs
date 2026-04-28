@@ -177,6 +177,12 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
 
     let t_install = Instant::now();
     println!("→ Running mise install in VM (persistent log at {log_path_h})...");
+    // MISE_CARGO_BINSTALL=true tells mise to use cargo-binstall when
+    // installing `cargo:` tools that have prebuilt GitHub-release binaries
+    // (notably tauri-cli — drops a 25-min compile to a ~30-sec download).
+    // mise auto-bootstraps cargo-binstall itself on first use, so no
+    // separate install step needed. Falls back to cargo install if binstall
+    // can't find a matching binary.
     let install_cmd = if profile.os == GuestOs::Windows {
         // Two-phase mise install on ARM64 Windows:
         //   1. `mise install rust` — installs rustup + the project's pinned
@@ -196,10 +202,12 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         // produced are x86_64 — what most Windows users actually ship.
         let switch_rustup = r#"powershell -NoProfile -Command "$rustup = (& mise where rust 2>$null) + '\\rustup.exe'; if (Test-Path $rustup) { & $rustup set default-host x86_64-pc-windows-msvc; & $rustup default --force-non-host stable-x86_64-pc-windows-msvc }""#;
         format!(
-            r#"{mkdir_log} & cd /d "{vm_project_dir}" && ({win_msvc_x64} && {mise} trust --yes && {mise} install rust && {switch_rustup} && {mise} install) >> "{log_path_h}" 2>&1"#
+            r#"{mkdir_log} & cd /d "{vm_project_dir}" && set MISE_CARGO_BINSTALL=true && ({win_msvc_x64} && {mise} trust --yes && {mise} install rust && {switch_rustup} && {mise} install) >> "{log_path_h}" 2>&1"#
         )
     } else {
-        format!(r#"{mkdir_log} && {linux_tee}cd "{vm_project_dir}" && {mise} trust --yes && {mise} install"#)
+        format!(
+            r#"{mkdir_log} && {linux_tee}cd "{vm_project_dir}" && export MISE_CARGO_BINSTALL=true && {mise} trust --yes && {mise} install"#
+        )
     };
     let code = ssh::exec_streaming(profile, &install_cmd)?;
     if code != 0 {
