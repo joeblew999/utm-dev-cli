@@ -187,10 +187,34 @@ impl WinRM {
 
     /// Run PowerShell as SYSTEM via a scheduled task (bypasses UAC token filtering).
     /// Returns true if the task completed within `timeout_secs`.
+    ///
+    /// Completion detection: the user's script is wrapped in a try/finally
+    /// that ALWAYS writes a sentinel file (`C:\bootstrap-step-done.txt`) at
+    /// the end. The poll loop watches for that sentinel via `Test-Path` —
+    /// far more reliable than `(Get-ScheduledTask).State`, which can stay
+    /// "Running" minutes after the action's actual process exits (observed
+    /// repeatedly during the VS Build Tools install on ARM64). If sentinel
+    /// detection fails (WinRM dropping during heavy I/O), we fall back to
+    /// the scheduled-task state check; if both fail, we keep polling until
+    /// timeout.
     pub fn run_elevated(&self, ps_code: &str, timeout_secs: u64) -> Result<bool> {
-        // Write script to disk first (avoids command-line quoting issues)
+        // Wrap user code so the sentinel is written even if the user code
+        // throws. $LASTEXITCODE survives across PowerShell try/finally for
+        // native processes. We don't propagate the exit code anywhere yet,
+        // but it's there if a future caller wants it.
+        let wrapped = format!(
+            "$ErrorActionPreference = 'Continue'\n\
+             try {{\n{ps_code}\n}} finally {{\n  \
+                Set-Content 'C:\\bootstrap-step-done.txt' \"$LASTEXITCODE\" -Force\n\
+             }}"
+        );
+
+        // Write script to disk first (avoids command-line quoting issues).
+        // Pre-clear the sentinel from any prior run so its presence below is
+        // unambiguous.
         let write_ps = format!(
-            "@'\n{ps_code}\n'@ | Set-Content 'C:\\bootstrap-step.ps1' -Force"
+            "Remove-Item 'C:\\bootstrap-step-done.txt' -Force -ErrorAction SilentlyContinue\n\
+             @'\n{wrapped}\n'@ | Set-Content 'C:\\bootstrap-step.ps1' -Force"
         );
         let w = self.run_ps(&write_ps)?;
         if w.exit_code != 0 {
@@ -215,14 +239,22 @@ Start-ScheduledTask -TaskName 'BootstrapStep'
             let elapsed = SystemTime::now().duration_since(started).unwrap_or_default().as_secs();
             print!("\r    ... [{:>4}s / {}s] still running", elapsed, timeout_secs);
             let _ = std::io::Write::flush(&mut std::io::stdout());
-            match self.run_ps(
-                "(Get-ScheduledTask -TaskName 'BootstrapStep' -ErrorAction SilentlyContinue).State",
-            ) {
-                Ok(r) if r.stdout.trim() != "Running" => {
-                    println!(); // newline after carriage-return progress
-                    break;
+
+            // Primary: sentinel file. Secondary: scheduled-task state.
+            // Fold both into one PS call so we only pay for one WinRM round-trip.
+            let probe = self.run_ps(
+                "if (Test-Path 'C:\\bootstrap-step-done.txt') { 'DONE' } \
+                 else { (Get-ScheduledTask -TaskName 'BootstrapStep' -ErrorAction SilentlyContinue).State }",
+            );
+            match probe {
+                Ok(r) => {
+                    let s = r.stdout.trim();
+                    if s == "DONE" || (!s.is_empty() && s != "Running") {
+                        println!(); // newline after carriage-return progress
+                        break;
+                    }
                 }
-                _ => {} // WinRM may drop during heavy I/O — keep polling
+                Err(_) => {} // WinRM may drop during heavy I/O — keep polling
             }
         }
 
@@ -231,7 +263,8 @@ Start-ScheduledTask -TaskName 'BootstrapStep'
             "Unregister-ScheduledTask -TaskName 'BootstrapStep' -Confirm:$false -ErrorAction SilentlyContinue",
         );
         let _ = self.run_ps(
-            "Remove-Item 'C:\\bootstrap-step.ps1' -Force -ErrorAction SilentlyContinue",
+            "Remove-Item 'C:\\bootstrap-step.ps1' -Force -ErrorAction SilentlyContinue;\
+             Remove-Item 'C:\\bootstrap-step-done.txt' -Force -ErrorAction SilentlyContinue",
         );
         Ok(true)
     }
