@@ -100,18 +100,25 @@ pub fn exec_with_exit(session: &Session, cmd: &str) -> Result<(String, i32)> {
 /// Returns the exit code.
 pub fn exec_streaming(profile: &VmProfile, cmd: &str) -> Result<i32> {
     let target = format!("{}@localhost", profile.user);
-    // -tt forces a pseudo-TTY which keeps remote stdout line-buffered. Without
-    // it, programs like cargo and mise pipe-detect and buffer their output,
-    // so a 10-min compile shows nothing on the host until completion.
+    // -tt forces a pseudo-TTY which keeps remote stdout line-buffered on
+    // Linux (cargo/mise pipe-detect and buffer otherwise — silent 10-min
+    // compiles). On Windows cmd.exe, -tt corrupts the session: the cmd
+    // exits immediately without running anything, returning 0. So Linux
+    // gets -tt; Windows uses plain pipes (we redirect to a log file at
+    // the cmd-level for visibility instead).
+    let port_str = profile.ssh_port.to_string();
+    let mut args: Vec<&str> = vec![
+        "-p", &port_str,
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-o", "BatchMode=yes",
+    ];
+    if profile.os == super::profiles::GuestOs::Linux {
+        args.insert(0, "-tt");
+    }
     let status = std::process::Command::new("ssh")
-        .args([
-            "-tt",
-            "-p", &profile.ssh_port.to_string(),
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
-            "-o", "BatchMode=yes",
-        ])
+        .args(&args)
         .arg(&target)
         .arg(cmd)
         .status()

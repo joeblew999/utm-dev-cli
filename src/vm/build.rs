@@ -107,48 +107,51 @@ pub fn run(profile: &VmProfile, project_dir: &Path) -> Result<()> {
 
     let mise  = if profile.os == GuestOs::Linux { "~/.local/bin/mise" } else { "mise" };
 
-    // Persistent log on the VM. `vm logs --name X` tails this. Survives if
-    // the SSH session drops mid-build.
-    let (log_path, tee) = match profile.os {
-        GuestOs::Linux => (
-            "~/.utm-dev-build/build.log".to_string(),
-            "mkdir -p ~/.utm-dev-build && exec > >(tee -a ~/.utm-dev-build/build.log) 2>&1; ".to_string(),
-        ),
-        GuestOs::Windows => (
-            r"%USERPROFILE%\.utm-dev-build\build.log".to_string(),
-            // cmd.exe doesn't have a native tee. Pipe through PowerShell's
-            // Tee-Object on the receiving end of the chain instead — done
-            // by the caller wrapping the whole inner command.
-            String::new(),
-        ),
+    // Persistent log on the VM. `vm logs --name X` tails this.
+    // - Linux: bash `exec > >(tee -a)` redirects stdout/stderr while the
+    //   command's exit code is preserved.
+    // - Windows: cmd.exe has no native tee, and piping through PowerShell
+    //   Tee-Object swallows the inner command's exit code (the pipe
+    //   returns powershell's exit, not cmd's). So on Windows we redirect
+    //   to the log file with `> log 2>&1` — loses live host-side streaming
+    //   for that exact command, but exit codes propagate correctly. Use
+    //   `vm logs --name X --follow` from a second terminal for live tail.
+    let log_path_h = match profile.os {
+        GuestOs::Linux   => "~/.utm-dev-build/build.log",
+        GuestOs::Windows => r"%USERPROFILE%\.utm-dev-build\build.log",
     };
+    let mkdir_log = match profile.os {
+        GuestOs::Linux   => "mkdir -p ~/.utm-dev-build".to_string(),
+        GuestOs::Windows => r#"(if not exist "%USERPROFILE%\.utm-dev-build" mkdir "%USERPROFILE%\.utm-dev-build")"#.to_string(),
+    };
+    let linux_tee = "exec > >(tee -a ~/.utm-dev-build/build.log) 2>&1; ";
 
-    println!("→ Running mise install in VM (live + persistent log at {log_path})...");
+    println!("→ Running mise install in VM (persistent log at {log_path_h})...");
     let install_cmd = if profile.os == GuestOs::Windows {
         format!(
-            r#"if not exist "%USERPROFILE%\.utm-dev-build" mkdir "%USERPROFILE%\.utm-dev-build" & cd /d "{vm_project_dir}" && (({mise} trust --yes && {mise} install) 2>&1) | powershell -NoProfile -Command "$input | Tee-Object -FilePath %USERPROFILE%\.utm-dev-build\build.log -Append""#
+            r#"{mkdir_log} & cd /d "{vm_project_dir}" && {mise} trust --yes >> "{log_path_h}" 2>&1 && {mise} install >> "{log_path_h}" 2>&1"#
         )
     } else {
-        format!(r#"{tee}cd "{vm_project_dir}" && {mise} trust --yes && {mise} install"#)
+        format!(r#"{mkdir_log} && {linux_tee}cd "{vm_project_dir}" && {mise} trust --yes && {mise} install"#)
     };
     let code = ssh::exec_streaming(profile, &install_cmd)?;
-    if code != 0 { bail!("mise install failed inside VM (exit {code}) — full log: vm logs --name {}", profile.name); }
+    if code != 0 { bail!("mise install failed inside VM (exit {code}) — see: utm-dev vm logs --name {}", profile.name); }
     println!("✓ Tools installed");
 
     // ── Build ─────────────────────────────────────────────────────────────────
 
     let platform_label = match profile.os { GuestOs::Windows => "Windows", GuestOs::Linux => "Linux" };
-    println!("→ Building Tauri {platform_label} app (live + persistent log; first run may take 10–30 min)...");
+    println!("→ Building Tauri {platform_label} app (first run may take 10–30 min — tail with: vm logs --name {} --follow)...", profile.name);
 
     let build_cmd = if profile.os == GuestOs::Windows {
         format!(
-            r#"cd /d "{vm_project_dir}" && (({mise} run build) 2>&1) | powershell -NoProfile -Command "$input | Tee-Object -FilePath %USERPROFILE%\.utm-dev-build\build.log -Append""#
+            r#"cd /d "{vm_project_dir}" && {mise} run build >> "{log_path_h}" 2>&1"#
         )
     } else {
-        format!(r#"{tee}cd "{vm_project_dir}" && {mise} run build"#)
+        format!(r#"{linux_tee}cd "{vm_project_dir}" && {mise} run build"#)
     };
     let code = ssh::exec_streaming(profile, &build_cmd)?;
-    if code != 0 { bail!("Build failed inside VM (exit {code}) — full log: vm logs --name {}", profile.name); }
+    if code != 0 { bail!("Build failed inside VM (exit {code}) — see: utm-dev vm logs --name {}", profile.name); }
     println!("✓ Build complete");
 
     // ── Pull artifacts ────────────────────────────────────────────────────────
@@ -156,9 +159,23 @@ pub fn run(profile: &VmProfile, project_dir: &Path) -> Result<()> {
     println!("→ Pulling artifacts...");
     std::fs::create_dir_all(&artifacts_dir)?;
 
-    let bundle_path = format!(
-        "{vm_project_dir}{sep}src-tauri{sep}target{sep}release{sep}bundle"
-    );
+    // Resolve the bundle path. cargo respects CARGO_TARGET_DIR which we may
+    // have set on the VM (e.g. Windows uses D:\target to keep C: from filling
+    // up). Default is `src-tauri/target` relative to the project.
+    let probe = if profile.os == GuestOs::Windows {
+        // Returns CARGO_TARGET_DIR on stdout if set, else "DEFAULT"
+        r#"if defined CARGO_TARGET_DIR (echo %CARGO_TARGET_DIR%) else (echo DEFAULT)"#.to_string()
+    } else {
+        r#"echo "${CARGO_TARGET_DIR:-DEFAULT}""#.to_string()
+    };
+    let (probe_out, _) = ssh::exec_with_exit(&session, &probe)?;
+    let target_dir = probe_out.trim().lines().last().unwrap_or("DEFAULT").trim();
+    let bundle_path = if target_dir == "DEFAULT" || target_dir.is_empty() {
+        format!("{vm_project_dir}{sep}src-tauri{sep}target{sep}release{sep}bundle")
+    } else {
+        format!("{target_dir}{sep}release{sep}bundle")
+    };
+    println!("  bundle path: {bundle_path}");
 
     // Archive on VM
     let (out, code) = if profile.os == GuestOs::Linux {

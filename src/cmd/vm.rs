@@ -107,6 +107,25 @@ pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
     }
 }
 
+fn ensure_qemu_img() -> anyhow::Result<String> {
+    if let Ok(p) = which::which("qemu-img") {
+        return Ok(p.to_string_lossy().into_owned());
+    }
+    println!("→ qemu-img not found — installing qemu via brew (~50 MB, one-time)...");
+    let r = std::process::Command::new("brew")
+        .args(["install", "qemu"])
+        .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+        .status()
+        .map_err(|e| anyhow::anyhow!("brew not found or failed: {e}"))?;
+    if !r.success() {
+        anyhow::bail!("brew install qemu failed");
+    }
+    let p = which::which("qemu-img")
+        .map_err(|_| anyhow::anyhow!("qemu-img still not on PATH after brew install"))?;
+    println!("✓ qemu-img: {}", p.display());
+    Ok(p.to_string_lossy().into_owned())
+}
+
 // ── vm resize-disk ────────────────────────────────────────────────────────────
 
 fn vm_resize_disk(name: &str, plus_gb: u32) -> anyhow::Result<()> {
@@ -138,13 +157,12 @@ fn vm_resize_disk(name: &str, plus_gb: u32) -> anyhow::Result<()> {
         .path();
     println!("→ qcow2: {}", qcow2.display());
 
-    let qemu_img = "/Applications/UTM.app/Contents/Frameworks/qemu-img.framework/qemu-img";
-    if !std::path::Path::new(qemu_img).exists() {
-        anyhow::bail!("qemu-img not found at {qemu_img} — install UTM or set UTM_QEMU_IMG");
-    }
+    // UTM bundles qemu-img only as a dylib, not a runnable CLI. Use the
+    // standalone qemu Homebrew package instead. Auto-install if missing.
+    let qemu_img = ensure_qemu_img()?;
 
     // Get current size (info JSON)
-    let info = std::process::Command::new(qemu_img)
+    let info = std::process::Command::new(&qemu_img)
         .args(["info", "--output=json"])
         .arg(&qcow2)
         .output()
