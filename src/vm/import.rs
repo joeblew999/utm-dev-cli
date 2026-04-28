@@ -35,7 +35,11 @@ pub fn ensure_imported(profile: &VmProfile) -> Result<(String, String)> {
     }
 
     println!("→ {} not found in UTM — importing...", profile.name);
-    let box_path = download_box(profile)?;
+    let box_path = if let Some(url) = profile.prebaked_url {
+        download_prebaked(profile, url)?
+    } else {
+        download_box(profile)?
+    };
     let cached_bundle = extract_box(&box_path, profile)?;
     let prepared = prepare_bundle_for_import(&cached_bundle, profile)?;
     let result = import_utm_bundle(&prepared);
@@ -105,6 +109,81 @@ fn cache_dir() -> Result<PathBuf> {
     let dir = home.join(".cache").join("utm-dev");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// Download a pre-baked .box from a direct URL (typically Cloudflare R2 or
+/// GitHub Release). Skips the Vagrant Cloud version-discovery dance —
+/// `prebaked_url` is the concrete artifact URL, not a registry lookup.
+/// Cached at `~/.cache/utm-dev/<box_name>_prebaked_arm64.box` so re-imports
+/// don't re-download. Use a versioned path in the URL to bust the cache.
+fn download_prebaked(profile: &VmProfile, url: &str) -> Result<PathBuf> {
+    let dest = cache_dir()?.join(format!("{}_prebaked_arm64.box", profile.box_name));
+    if dest.exists() {
+        println!("  (using cached pre-baked box {})", dest.display());
+        return Ok(dest);
+    }
+
+    println!("→ Downloading pre-baked box for {}: {}", profile.name, url);
+    let partial = dest.with_extension("box.partial");
+    let resume_from = std::fs::metadata(&partial).map(|m| m.len()).unwrap_or(0);
+    if resume_from > 0 {
+        println!("  Resuming from {:.2} GB...", resume_from as f64 / 1_073_741_824.0);
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(7200))
+        .build()?;
+    let mut req = client.get(url);
+    if resume_from > 0 {
+        req = req.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+    }
+    let mut resp = req.send().with_context(|| format!("GET {url}"))?;
+    let status = resp.status();
+    let resumed = status == reqwest::StatusCode::PARTIAL_CONTENT;
+    if !status.is_success() {
+        bail!("pre-baked box download failed: HTTP {status}");
+    }
+    if resume_from > 0 && !resumed {
+        println!("  (server doesn't support resume — starting from 0)");
+    }
+    let starting_offset = if resumed { resume_from } else { 0 };
+    let body_len = resp.content_length().unwrap_or(0);
+    let total = starting_offset + body_len;
+
+    let pb = ProgressBar::new(total);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] \
+                 {bytes}/{total_bytes} ({bytes_per_sec}, eta {eta})",
+            )
+            .unwrap()
+            .progress_chars("=>-"),
+    );
+    pb.set_position(starting_offset);
+    pb.enable_steady_tick(Duration::from_secs(5));
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(!resumed)
+        .append(resumed)
+        .open(&partial)?;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = resp.read(&mut buf)?;
+        if n == 0 { break; }
+        file.write_all(&buf[..n])?;
+        pb.inc(n as u64);
+    }
+    pb.finish_with_message("downloaded");
+
+    if std::fs::metadata(&partial)?.len() < 100_000_000 {
+        let _ = std::fs::remove_file(&partial);
+        bail!("Pre-baked download too small (<100 MB) — likely failed");
+    }
+    std::fs::rename(&partial, &dest)?;
+    Ok(dest)
 }
 
 fn download_box(profile: &VmProfile) -> Result<PathBuf> {

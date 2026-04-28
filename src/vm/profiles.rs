@@ -25,6 +25,12 @@ pub struct VmProfile {
     pub bootstrap:   BootstrapMode,
     pub memory_mib:  u32,
     pub cpu_cores:   u32,
+    /// Optional direct-download URL for a *pre-baked* box (.tar.gz wrapping
+    /// a .utm bundle). When set, `import::ensure_imported` downloads from
+    /// here instead of querying Vagrant Cloud — skipping the bootstrap dance
+    /// for fresh installs because the image already has VS Build Tools,
+    /// WebView2, mise, etc. installed. None falls back to Vagrant Cloud.
+    pub prebaked_url: Option<&'static str>,
 }
 
 const PROFILES: &[VmProfile] = &[
@@ -42,6 +48,7 @@ const PROFILES: &[VmProfile] = &[
         cpu_cores:  4,
         // Vagrant utm/windows-11 ships with ~26 GB. VS Build Tools alone
         // takes 5-6 GB; a Tauri build adds another ~6 GB. 80 GB is comfortable.
+        prebaked_url: None, // set to Cloudflare R2 URL after publishing a pre-baked box
     },
     VmProfile {
         name:       "windows-test",
@@ -55,6 +62,7 @@ const PROFILES: &[VmProfile] = &[
         bootstrap:  BootstrapMode::SshOnly,
         memory_mib: 4096,
         cpu_cores:  2,
+        prebaked_url: None,
     },
     VmProfile {
         name:       "linux-build",
@@ -70,6 +78,7 @@ const PROFILES: &[VmProfile] = &[
         cpu_cores:  4,
         // Vagrant utm/ubuntu-24.04 ships with ~19 GB. Vanilla Tauri ate
         // ~10 GB at peak; 40 GB gives headroom for bigger user projects.
+        prebaked_url: None, // set to Cloudflare R2 URL after publishing a pre-baked box
     },
     VmProfile {
         name:       "linux-test",
@@ -83,6 +92,7 @@ const PROFILES: &[VmProfile] = &[
         bootstrap:  BootstrapMode::SshOnly,
         memory_mib: 2048,
         cpu_cores:  2,
+        prebaked_url: None,
     },
     VmProfile {
         name:       "linux-dev",
@@ -96,6 +106,7 @@ const PROFILES: &[VmProfile] = &[
         bootstrap:  BootstrapMode::Full,
         memory_mib: 6144,
         cpu_cores:  4,
+        prebaked_url: None,
     },
 ];
 
