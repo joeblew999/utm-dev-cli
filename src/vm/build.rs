@@ -153,26 +153,30 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     // - Windows: cmd.exe has no native tee, and piping through PowerShell
     //   Tee-Object swallows the inner command's exit code (the pipe
     //   returns powershell's exit, not cmd's). So on Windows we redirect
-    //   to the log file with `> log 2>&1` — loses live host-side streaming
+    //   to the log file with `>> log 2>&1` — loses live host-side streaming
     //   for that exact command, but exit codes propagate correctly. Use
     //   `vm logs --name X --follow` from a second terminal for live tail.
     //
-    // We also rotate the log on entry: an aborted previous run can leave
-    // a zombie process holding the log file open (cmd.exe `>>` opens it
-    // without FILE_SHARE_DELETE). New runs that try to open the same
-    // path then fail with SHARING_VIOLATION. Renaming the file (or
-    // best-effort delete) gets us a clean slot every run; old logs are
-    // preserved as build.log.<unix-ts>.
+    // Best-effort rotation: rename the existing log out of the way before
+    // the new run opens its own. Mostly a niceness for `vm logs` users —
+    // if a previous run aborted with the file locked, the move itself
+    // fails silently and the new run will append to the existing log.
+    // (The deeper SHARING_VIOLATION case is rare in practice — only
+    // happens if we kill the host-side build process during mid-cmd.exe
+    // file ops; `vm restart` clears it.)
     let log_path_h = match profile.os {
         GuestOs::Linux   => "~/.utm-dev-build/build.log",
         GuestOs::Windows => r"%USERPROFILE%\.utm-dev-build\build.log",
     };
     let mkdir_log = match profile.os {
-        GuestOs::Linux   => "mkdir -p ~/.utm-dev-build && \
-                             ([ -f ~/.utm-dev-build/build.log ] && \
-                              mv -f ~/.utm-dev-build/build.log ~/.utm-dev-build/build.log.$(date +%s) 2>/dev/null || true)".to_string(),
+        GuestOs::Linux => "mkdir -p ~/.utm-dev-build && \
+                           [ -f ~/.utm-dev-build/build.log ] && \
+                           mv -f ~/.utm-dev-build/build.log ~/.utm-dev-build/build.log.old \
+                             2>/dev/null || true".to_string(),
         GuestOs::Windows => {
-            r#"(if not exist "%USERPROFILE%\.utm-dev-build" mkdir "%USERPROFILE%\.utm-dev-build") & (powershell -NoProfile -Command "$p = '%USERPROFILE%\.utm-dev-build\build.log'; if (Test-Path $p) { Move-Item -Force $p ($p + '.' + [int][double]::Parse((Get-Date -UFormat %%s))) -ErrorAction SilentlyContinue }")"#.to_string()
+            // No timestamp/random — too many cmd↔PS escaping landmines. A
+            // single .old slot is enough; each run overwrites the prior .old.
+            r#"(if not exist "%USERPROFILE%\.utm-dev-build" mkdir "%USERPROFILE%\.utm-dev-build") & (move /y "%USERPROFILE%\.utm-dev-build\build.log" "%USERPROFILE%\.utm-dev-build\build.log.old" >nul 2>&1)"#.to_string()
         }
     };
     let linux_tee = "exec > >(tee -a ~/.utm-dev-build/build.log) 2>&1; ";
