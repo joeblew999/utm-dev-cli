@@ -5,12 +5,16 @@ use anyhow::{bail, Context, Result};
 use super::profiles::{BootstrapMode, GuestOs, VmProfile};
 use super::{ssh, winrm};
 
-pub fn run(profile: &VmProfile, session: &ssh2::Session) -> Result<()> {
+pub fn run(profile: &VmProfile) -> Result<()> {
     if profile.bootstrap == BootstrapMode::None {
         return Ok(());
     }
     match profile.os {
-        GuestOs::Linux   => linux(session, profile),
+        GuestOs::Linux   => {
+            // Linux is reachable via SSH right after wait_for_boot succeeds.
+            let session = ssh::connect(profile)?;
+            linux(&session, profile)
+        }
         GuestOs::Windows => windows(profile),
     }
 }

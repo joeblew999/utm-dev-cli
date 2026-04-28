@@ -18,21 +18,22 @@ use super::utm;
 const VAGRANT_API: &str = "https://api.cloud.hashicorp.com/vagrant/2022-09-30/registry/utm";
 
 /// Ensure the VM is imported into UTM, downloading and importing if needed.
-/// Returns the UUID of the (possibly newly imported) VM.
-pub fn ensure_imported(profile: &VmProfile) -> Result<String> {
+/// Returns `(uuid, display_name)` — the display_name is what UTM actually
+/// assigned (it ignores our bundle filename and uses the box's internal
+/// `_config.plist` Name field, e.g. `packer-vm-1735447014`).
+pub fn ensure_imported(profile: &VmProfile) -> Result<(String, String)> {
     if let Some(entry) = utm::list_vms()?
         .into_iter()
         .find(|e| e.name == profile.box_name)
     {
         println!("✓ {} already in UTM ({})", profile.box_name, entry.uuid);
-        return Ok(entry.uuid);
+        return Ok((entry.uuid, entry.name));
     }
 
     println!("→ {} not found in UTM — importing...", profile.box_name);
     let box_path = download_box(profile)?;
     let utm_bundle = extract_box(&box_path, profile)?;
-    let uuid = import_utm_bundle(&utm_bundle)?;
-    Ok(uuid)
+    import_utm_bundle(&utm_bundle)
 }
 
 // ── Download ─────────────────────────────────────────────────────────────────
@@ -246,7 +247,7 @@ fn find_utm_bundle(dir: &Path) -> Result<PathBuf> {
 
 // ── UTM import ───────────────────────────────────────────────────────────────
 
-fn import_utm_bundle(bundle: &Path) -> Result<String> {
+fn import_utm_bundle(bundle: &Path) -> Result<(String, String)> {
     println!("→ Importing {} into UTM...", bundle.display());
 
     let bundle_str = bundle.to_str().context("bundle path not valid UTF-8")?;
@@ -281,7 +282,7 @@ fn import_utm_bundle(bundle: &Path) -> Result<String> {
         for entry in utm::list_vms()? {
             if !before.contains(&entry.uuid) {
                 println!("✓ Imported: {} ({})", entry.name, entry.uuid);
-                return Ok(entry.uuid);
+                return Ok((entry.uuid, entry.name));
             }
         }
     }

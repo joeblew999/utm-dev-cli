@@ -117,12 +117,13 @@ fn vm_up(name: &str) -> anyhow::Result<()> {
         let st = state::load(name)?;
         (st.uuid, st.display_name)
     } else {
-        // First run: import (download + import box)
+        // First run: import (download + import box). UTM may rename the bundle
+        // based on its internal _config.plist (e.g. windows-11 → packer-vm-…),
+        // so persist the *actual* display name UTM assigned, not profile.box_name.
         println!("── First run for '{}' ─────────────────────────", name);
-        let uuid = import::ensure_imported(profile)?;
+        let (uuid, display) = import::ensure_imported(profile)?;
         utm::configure_network(&uuid, profile)?;
         utm::configure_resources(&uuid, profile.memory_mib, profile.cpu_cores)?;
-        let display = profile.box_name.to_string();
         state::save(
             name,
             &state::VmState {
@@ -133,13 +134,15 @@ fn vm_up(name: &str) -> anyhow::Result<()> {
         (uuid, display)
     };
 
-    // Start and wait for boot
+    // Start and wait for boot. wait_for_boot probes the right service per OS:
+    // SSH for Linux, WinRM for Windows. For Windows on first boot, OpenSSH
+    // isn't installed yet — the WinRM bootstrap is what installs it.
     utm::start_vm(&utm_display)?;
     utm::wait_for_boot(profile, 300)?;
 
-    // Bootstrap (idempotent — checks before each step)
-    let session = ssh::connect(profile)?;
-    bootstrap::run(profile, &session)?;
+    // Bootstrap (idempotent — checks before each step). Windows uses WinRM
+    // internally; Linux opens its own SSH session inside bootstrap::run.
+    bootstrap::run(profile)?;
 
     println!("✓ {} is up (UUID: {})", name, uuid);
     Ok(())
