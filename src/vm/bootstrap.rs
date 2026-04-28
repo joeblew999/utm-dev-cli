@@ -127,67 +127,126 @@ fn windows(profile: &VmProfile) -> Result<()> {
     println!("→ Bootstrapping Windows VM via WinRM (port {port})...");
 
     // Step 1: OpenSSH Server
-    let check = w.run_ps(
-        "(Get-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).State",
+    let sshd_state = w.run_ps(
+        "Get-Service sshd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status",
     )?;
-    if !check.stdout.contains("Installed") {
-        println!("  Installing OpenSSH Server (~3 min, downloads from Windows Update)...");
-        w.run_elevated(
-            "Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0",
-            360,
+    if !sshd_state.stdout.trim().eq_ignore_ascii_case("Running") {
+        let cap = w.run_ps(
+            "(Get-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).State",
         )?;
-        println!("  ✓ OpenSSH Server installed");
+        if !cap.stdout.contains("Installed") {
+            println!("  Installing OpenSSH Server (~3 min, downloads from Windows Update)...");
+            w.run_elevated(
+                "Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0",
+                360,
+            )?;
+        }
+        // Configure sshd_config: uncomment PasswordAuthentication, comment out the
+        // Match Group administrators block so ~/.ssh/authorized_keys works for all users.
+        // Also keep __PROGRAMDATA__ path working for admin accounts.
+        w.run_elevated(r"
+$p = 'C:\ProgramData\ssh\sshd_config'
+$c = Get-Content $p
+$o = @()
+foreach ($l in $c) {
+    if ($l -match '^#PasswordAuthentication yes')              { $o += 'PasswordAuthentication yes' }
+    elseif ($l -match '^Match Group administrators')           { $o += '#Match Group administrators' }
+    elseif ($l -match 'AuthorizedKeysFile __PROGRAMDATA__')   { $o += '#AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys' }
+    else                                                       { $o += $l }
+}
+$o | Set-Content $p -Force
+Start-Service sshd -ErrorAction SilentlyContinue
+Set-Service -Name sshd -StartupType Automatic
+Restart-Service sshd
+", 60)?;
+        println!("  ✓ OpenSSH Server installed and configured");
     } else {
-        println!("  ✓ OpenSSH Server already installed");
+        println!("  ✓ sshd already running");
     }
 
-    // Step 2: Start + enable sshd
-    w.run_ps("Start-Service sshd -ErrorAction SilentlyContinue; Set-Service sshd -StartupType Automatic")?;
-    println!("  ✓ sshd running");
-
-    // Step 3: Authorise the host's public key so key-based SSH auth works
+    // Step 2: Authorise the host's public key (~/.ssh/authorized_keys — matches sshd_config)
     let pub_key = find_public_key()?;
-    let ps = format!(
-        r"
+    let key_ps = format!(
+        r#"
 $key = '{pub_key}'
-$dir = 'C:\ProgramData\ssh'
+$dir = "$env:USERPROFILE\.ssh"
 if (-not (Test-Path $dir)) {{ New-Item -ItemType Directory -Path $dir | Out-Null }}
-Set-Content '$dir\administrators_authorized_keys' $key -Encoding ASCII
-icacls '$dir\administrators_authorized_keys' /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F' | Out-Null
-"
+$f = "$dir\authorized_keys"
+if (-not (Test-Path $f) -or ((Get-Content $f) -notcontains $key)) {{
+    Add-Content $f $key -Encoding ASCII
+}}
+icacls $f /inheritance:r /grant ($env:USERNAME + ':F') /grant 'SYSTEM:F' | Out-Null
+"#
     );
-    w.run_ps(&ps)?;
+    w.run_ps(&key_ps)?;
     println!("  ✓ SSH authorized key installed");
 
-    // Step 4: Fix sshd_config (clean minimal — no invalid Match blocks)
-    let sshd_cfg = r"
-$cfg = @'
-Port 22
-PubkeyAuthentication yes
-AuthorizedKeysFile .ssh/authorized_keys
-PasswordAuthentication yes
-Subsystem sftp sftp-server.exe
-'@
-Set-Content 'C:\ProgramData\ssh\sshd_config' $cfg -Encoding ASCII
-Restart-Service sshd
-";
-    w.run_ps(sshd_cfg)?;
-    println!("  ✓ sshd_config updated");
-
-    // Step 5: Enable LocalAccountTokenFilterPolicy (so WinRM works with local admin)
+    // Step 3: LocalAccountTokenFilterPolicy — lets WinRM work with local admin accounts
     w.run_ps(
         "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' \
          -Name LocalAccountTokenFilterPolicy -Value 1 -Type DWord -Force",
     )?;
     println!("  ✓ LocalAccountTokenFilterPolicy = 1");
 
-    // Step 6: mise for Windows
+    // ssh-only mode stops here (windows-test profile)
+    if profile.bootstrap == BootstrapMode::SshOnly {
+        println!("✓ Windows bootstrap complete (SSH only)");
+        return Ok(());
+    }
+
+    // ── Full mode: dev tools ────────────────────────────────────────────────
+
+    // Step 4: VS Build Tools with C++ workload (needed by Rust/MSVC on Windows)
+    let vswhere = r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe";
+    let vc_check = w.run_ps(&format!(
+        r#"if (Test-Path '{vswhere}') {{ & '{vswhere}' -products * -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null }} else {{ '' }}"#
+    ))?;
+    if vc_check.stdout.trim().is_empty() {
+        println!("  Downloading VS Build Tools bootstrapper...");
+        w.run_ps(r"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile 'C:\vs_buildtools.exe' -UseBasicParsing
+")?;
+        println!("  Installing VS Build Tools + C++ workload (10-15 min on ARM64)...");
+        w.run_elevated(r"
+$p = Start-Process -FilePath 'C:\vs_buildtools.exe' -ArgumentList @(
+    '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+    '--includeRecommended', '--quiet', '--norestart', '--wait'
+) -Wait -NoNewWindow -PassThru
+$p.ExitCode | Out-File 'C:\vs-exit.txt'
+", 1200)?;
+        println!("  ✓ VS Build Tools installed");
+    } else {
+        println!("  ✓ VS Build Tools already installed");
+    }
+
+    // Step 5: WebView2 Runtime (required by Tauri)
+    let wv2 = w.run_ps(
+        "winget list --id Microsoft.EdgeWebView2Runtime --accept-source-agreements 2>$null | Select-String 'EdgeWebView2'",
+    )?;
+    if wv2.stdout.trim().is_empty() {
+        println!("  Installing WebView2 Runtime...");
+        w.run_elevated(
+            "winget install --id Microsoft.EdgeWebView2Runtime --accept-source-agreements --accept-package-agreements --silent",
+            120,
+        )?;
+        println!("  ✓ WebView2 Runtime installed");
+    } else {
+        println!("  ✓ WebView2 Runtime already installed");
+    }
+
+    // Step 6: mise (try winget first, fall back to PowerShell installer)
     let check_mise = w.run_ps(
         "Get-Command mise -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name",
     )?;
     if check_mise.stdout.trim().is_empty() {
         println!("  Installing mise...");
-        w.run_elevated("irm https://mise.run/install.ps1 | iex", 180)?;
+        let r = w.run_ps(
+            "winget install --id jdx.mise --accept-source-agreements --accept-package-agreements --silent",
+        )?;
+        if r.exit_code != 0 {
+            w.run_elevated("Invoke-Expression (Invoke-WebRequest -Uri 'https://mise.run' -UseBasicParsing).Content", 120)?;
+        }
         println!("  ✓ mise installed");
     } else {
         println!("  ✓ mise already installed");
