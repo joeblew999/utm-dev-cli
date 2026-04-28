@@ -162,3 +162,33 @@ mise --version             → install if missing
 rustc --version            → mise use rust@stable if missing
 linux-dev: xdg-utils + GNOME check
 ```
+
+Both Linux and Windows bootstraps install the host's SSH public key into
+the VM (Linux: `~/.ssh/authorized_keys`; Windows: BOTH that path AND
+`C:\ProgramData\ssh\administrators_authorized_keys` because vagrant is an
+admin and Windows OpenSSH's `Match Group administrators` redirects admin
+users to the latter). Result: passwordless `ssh`, `scp`, and VS Code Remote
+SSH against the VMs out of the box.
+
+## Demo repo for end-to-end testing
+
+A real Tauri starter lives at:
+
+```
+~/workspace/go/src/github.com/joeblew999/utm-dev-demo
+```
+
+Scaffolded via `cargo create-tauri-app -y -t vanilla -m cargo`, with a
+`mise.toml` declaring `cargo:tauri-cli = "2"` and a `[tasks.build]` that
+runs `cargo tauri build`. Use this for full-pipeline validation:
+
+```bash
+cd ~/workspace/go/src/github.com/joeblew999/utm-dev-demo
+utm-dev vm build --name linux-build     # produces .deb/.AppImage in .build/linux/
+utm-dev vm build --name windows-build   # produces .msi/.exe in .build/windows/
+```
+
+When debugging build failures: outputs land in the demo's `.build/<platform>/`
+inside the project dir you ran `vm build` from (`current_dir()` at command
+start). Open the demo in VS Code and the artifacts appear in the same
+workspace.
