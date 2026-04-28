@@ -2,19 +2,23 @@
 
 Punch list of what's missing, broken, or rough. Triaged by impact.
 
-## Blocking / correctness
+## Source-of-truth invariant
 
-1. **Windows bootstrap doesn't pre-install Rust** — [src/vm/bootstrap.rs](src/vm/bootstrap.rs) installs VS Build Tools, WebView2, mise, but never `mise use rust@stable` (Linux bootstrap does at line ~89). Today, `vm build` works only because the user's project `mise.toml` declares `rust = "..."` so `mise install` brings it in. A user project without that line silently fails. Fix: add `mise use --global rust@stable` to the Windows bootstrap after mise is installed.
+**Rust + tauri-cli + bun + node etc. are pinned by the user's project `mise.toml` — utm-dev's bootstrap does NOT install language runtimes.** The bootstrap only installs *non-mise-managed* prerequisites (apt deps, VS Build Tools, OpenSSH, WebView2). Anything mise can manage stays in mise's hands.
+
+This is why a project consuming utm-dev MUST have `[tools] rust = "..."` (and `cargo:tauri-cli`, `bun`, etc.) declared in its `mise.toml` — `vm build` runs `mise install` inside the project dir to provision exactly those.
 
 ## Functional gaps (advertised but missing)
 
-2. **`vm run`** — AGENTS.md describes it; not in `VmCommands` enum. Document as future, but anyone reading `--help` is going to ask.
+1. **`vm run`** — AGENTS.md describes it; not in `VmCommands` enum. Document as future, but anyone reading `--help` is going to ask.
 
-3. **Linux x86_64 cross-compile** — `vm_build` rejects `--target x86-64` and `--target both` for Linux profiles. Real fix needs Debian multiarch (`dpkg --add-architecture amd64` + `:amd64` packages for libwebkit2gtk + friends + `gcc-x86-64-linux-gnu`). Plan it once Windows path is solid.
+2. **Linux x86_64 cross-compile** — `vm_build` rejects `--target x86-64` and `--target both` for Linux profiles. Real fix needs Debian multiarch (`dpkg --add-architecture amd64` + `:amd64` packages for libwebkit2gtk + friends + `gcc-x86-64-linux-gnu`). Plan it once Windows path is solid.
 
-4. **`vm restart`** — small ergonomic gap. Today: `vm down && vm up`.
+3. **`vm restart`** — small ergonomic gap. Today: `vm down && vm up`.
 
-5. **`utm-dev setup` on Windows host bails** — fine because UTM only runs on macOS, but the message should say so explicitly: "utm-dev requires macOS — UTM doesn't run on Windows/Linux hosts".
+4. **`utm-dev setup` on Windows/Linux host bails** — fine because UTM only runs on macOS, but the message should say so explicitly: "utm-dev requires macOS — UTM doesn't run on Windows/Linux hosts".
+
+5. **Linux bootstrap pre-installs Rust globally** — [src/vm/bootstrap.rs](src/vm/bootstrap.rs) step 4 runs `mise use --global rust@stable`. Per the source-of-truth invariant above, this is redundant: the project's mise.toml provisions Rust at build time. Remove it, then Linux + Windows bootstraps are symmetric.
 
 ## Brittle / edge cases
 
