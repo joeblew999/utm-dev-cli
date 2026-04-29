@@ -83,12 +83,21 @@ utm-dev vm down    --name windows-build
 utm-dev vm restart --name windows-build
 utm-dev vm shell   --name windows-build             # interactive ssh
 utm-dev vm doctor  --name windows-build             # health checks inside the VM
+utm-dev vm clean   --name windows-build             # reclaim disk (logs, installers, DISM)
 utm-dev vm exec    --name windows-build  "ver"      # run one command via ssh
 utm-dev vm push    --name windows-build  --from ./local --to /vm/path
 utm-dev vm pull    --name windows-build  --from /vm/path --to ./local
 utm-dev vm package --name windows-build             # export as Vagrant .box
-utm-dev vm resize-disk --name windows-build --plus-gb 60
+utm-dev vm resize-disk --name windows-build --plus-gb 30  # grow C: when full
 ```
+
+## Known caveats
+
+- **Windows VM C: fills up.** Vagrant's `utm/windows-11` ships a 26 GB C:; VS Build Tools + Windows leave ~0.5 GB free. Run `utm-dev vm clean --name windows-build` to reclaim some space, or `vm resize-disk --plus-gb 30` for headroom.
+- **Tauri Windows release builds exit in headless `vm run`** — Win32 GUI subsystem has no stdout and exits without an interactive desktop. Use RDP at `localhost:3389` (user/pass `vagrant`/`vagrant`) for visual access, or embed an out-of-band logger per [docs/adr-001](docs/adr-001-vm-run-observability.md).
+- **`vm screenshot` of Tauri Linux is a black PNG** — WebKit-GTK needs GL/EGL; bare Xvfb has none. Process-level verification works; for visual capture use the logger pattern.
+
+See [GAPS.md](GAPS.md) for the full punch list.
 
 ## Requirements
 

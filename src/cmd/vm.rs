@@ -20,6 +20,14 @@ pub enum VmCommands {
         #[arg(long, help = "VM profile name")]
         name: String,
     },
+    /// Clean transient state on the VM: build/run logs, temp files,
+    /// installer leftovers. Does NOT touch the cargo target/install caches
+    /// (those are the speed-up — see CARGO_TARGET_DIR / D:\target).
+    /// Useful when C: drive fills up on Windows.
+    Clean {
+        #[arg(long, help = "VM profile name")]
+        name: String,
+    },
     /// Build app in a VM (auto-starts if needed, syncs code, pulls artifacts)
     Build {
         #[arg(long, help = "VM profile name")]
@@ -133,6 +141,7 @@ pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
         VmCommands::Up { name }             => vm_up(&name),
         VmCommands::Down { name }           => vm_down(&name),
         VmCommands::Restart { name }        => { vm_down(&name)?; vm_up(&name) }
+        VmCommands::Clean { name }          => vm_clean(&name),
         VmCommands::Exec { name, cmd }      => vm_exec(&name, &cmd.join(" ")),
         VmCommands::Shell { name }          => vm_shell(&name),
         VmCommands::Logs { name, kind, follow, tail, errors } => vm_logs(&name, &kind, follow, tail, errors),
@@ -709,6 +718,45 @@ fn parse_package_name(content: &str) -> Option<String> {
         }
     }
     None
+}
+
+// ── vm clean ─────────────────────────────────────────────────────────────────
+
+fn vm_clean(name: &str) -> anyhow::Result<()> {
+    let profile = profiles::get(name)?;
+    ssh::check(profile)?;
+    let session = ssh::connect(profile)?;
+    println!("→ Cleaning transient state on {name}...");
+
+    let cmd = match profile.os {
+        profiles::GuestOs::Linux => {
+            // Remove build/run logs, tmp installer leftovers.
+            // Leaves D:\target / cargo cache / mise installs alone.
+            "rm -rf ~/.utm-dev-build ~/.utm-dev-run /tmp/utm-dev-* 2>/dev/null; \
+             df -h / | tail -n 1"
+        }
+        profiles::GuestOs::Windows => {
+            // del leftovers from bootstrap + builds. dism cleanup cleans
+            // up Windows Update components (often hundreds of MB).
+            "del /q /s \"%USERPROFILE%\\.utm-dev-build\\*\" 2>nul & \
+             rmdir /q /s \"%USERPROFILE%\\.utm-dev-build\" 2>nul & \
+             del /q /s \"%USERPROFILE%\\.utm-dev-run\\*\" 2>nul & \
+             rmdir /q /s \"%USERPROFILE%\\.utm-dev-run\" 2>nul & \
+             del /q /f C:\\vs_buildtools.exe C:\\webview2_setup.exe \
+                       C:\\bootstrap-step.ps1 C:\\bootstrap-step-done.txt \
+                       C:\\vs-exit.txt 2>nul & \
+             dism /Online /Cleanup-Image /StartComponentCleanup /ResetBase 2>nul & \
+             powershell -NoProfile -Command \"(Get-PSDrive C).Free/1GB | ForEach-Object { 'C: ' + [math]::Round($_,1) + ' GB free' }\""
+        }
+    };
+
+    let (out, code) = ssh::exec_with_exit(&session, cmd)?;
+    println!("{out}");
+    if code != 0 {
+        eprintln!("(some cleanup steps may have failed — non-fatal)");
+    }
+    println!("✓ cleaned");
+    Ok(())
 }
 
 // ── vm screenshot ────────────────────────────────────────────────────────────
