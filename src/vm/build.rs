@@ -224,10 +224,15 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         // toolchain has no linker. We pivot the entire build to x64 and
         // run under Windows ARM64's native x64 emulation. The .msi/.exe
         // produced are x86_64 — what most Windows users actually ship.
-        let switch_rustup = r#"powershell -NoProfile -Command "$rustup = (& mise where rust 2>$null) + '\\rustup.exe'; if (Test-Path $rustup) { & $rustup set default-host x86_64-pc-windows-msvc; & $rustup default --force-non-host stable-x86_64-pc-windows-msvc }""#;
-        let install_sccache = format!(
-            "{mise} use --global \"cargo:sccache@latest\" 2>nul || echo (sccache install best-effort)"
-        );
+        // switch_rustup is one PS one-liner. Keep `if` body single-statement
+        // to avoid `{ ... }` blocks — cmd.exe quirks with embedded braces
+        // inside multi-`&&` chains have caused MissingEndCurlyBrace parse
+        // errors in the past. Two separate PS calls, sequenced by &&.
+        let switch_rustup = r#"powershell -NoProfile -Command "$r = (& mise where rust); if (Test-Path ($r + '\\rustup.exe')) { & ($r + '\\rustup.exe') set default-host x86_64-pc-windows-msvc }" && powershell -NoProfile -Command "$r = (& mise where rust); if (Test-Path ($r + '\\rustup.exe')) { & ($r + '\\rustup.exe') default --force-non-host stable-x86_64-pc-windows-msvc }""#;
+        // sccache install is best-effort — not blocking the build chain.
+        // Plain `||` with no echo arg avoids cmd.exe's grouping confusion
+        // around `(...)` in echo args.
+        let install_sccache = format!("{mise} use --global \"cargo:sccache@latest\" 2>nul || ver >nul");
         format!(
             r#"{mkdir_log} & cd /d "{vm_project_dir}" && set MISE_CARGO_BINSTALL=true && set CARGO_INCREMENTAL=0 && ({win_msvc_x64} && {mise} trust --yes && {mise} install rust && {switch_rustup} && {install_sccache} && {mise} install) >> "{log_path_h}" 2>&1"#
         )
@@ -310,19 +315,24 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         }
 
         // 2. cargo tauri build --target <triple>
-        //    On Windows we always use the x64 toolchain (Hostarm64\x64) since
-        //    the only supported triple is x86_64-pc-windows-msvc.
-        //    For Linux x86_64 cross-compile, point cargo at the multiarch
-        //    cross-linker (gcc-x86-64-linux-gnu) and pass PKG_CONFIG_PATH so
-        //    pkg-config picks up :amd64 system libs.
-        //    RUSTC_WRAPPER=sccache enables cross-project artifact caching.
-        //    Best-effort — if sccache isn't installed we fall back to plain
-        //    cargo (the wrapper env var is set unconditionally; cargo just
-        //    fails to find sccache and continues without it... actually it
-        //    errors, so we conditionally set it only if sccache is on PATH).
+        //    On Windows: use the x64 toolchain (Hostarm64\x64) since the
+        //    only supported triple is x86_64-pc-windows-msvc.
+        //    For Linux x86_64 cross-compile: point cargo at the multiarch
+        //    cross-linker (gcc-x86-64-linux-gnu) + multiarch PKG_CONFIG_PATH.
+        //
+        //    RUSTC_WRAPPER=sccache (cross-project artifact cache) when
+        //    sccache is installed. We set the env var unconditionally to
+        //    `sccache` — cargo invokes it as `sccache rustc ...`. If sccache
+        //    isn't on PATH, cargo errors with "no such file"; we don't want
+        //    that. Strategy: set RUSTC_WRAPPER only if sccache is present.
+        //    On Linux this is `command -v sccache`; on Windows we use a
+        //    plain conditional `set` *outside* the build parens (a `for /f`
+        //    inside parens confuses cmd.exe and breaks the whole group).
         let build_cmd = if profile.os == GuestOs::Windows {
+            // Probe sccache once via a separate command, set env at the
+            // outer cmd scope, then run the build inside parens.
             format!(
-                r#"cd /d "{vm_project_dir}" && ({win_msvc_x64} && for /f "delims=" %S in ('where sccache 2^>nul') do @set RUSTC_WRAPPER=%S && {mise} exec -- cargo tauri build --target {triple}) >> "{log_path_h}" 2>&1"#
+                r#"cd /d "{vm_project_dir}" && (where sccache >nul 2>&1 && set RUSTC_WRAPPER=sccache || ver >nul) && ({win_msvc_x64} && {mise} exec -- cargo tauri build --target {triple}) >> "{log_path_h}" 2>&1"#
             )
         } else {
             let linux_cross_env = linux_cross_env_for(triple);

@@ -794,14 +794,15 @@ fn vm_run(name: &str, bin: Option<&str>) -> anyhow::Result<()> {
             "mkdir -p ~/.utm-dev-run; pkill Xvfb 2>/dev/null; pkill openbox 2>/dev/null; pkill {bin_name} 2>/dev/null; sleep 1; setsid -f Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >~/.utm-dev-run/xvfb.log 2>&1; sleep 1; DISPLAY=:99 setsid -f openbox --replace >~/.utm-dev-run/openbox.log 2>&1 || true; sleep 1; DISPLAY=:99 setsid -f '{bin}' >~/.utm-dev-run/run.log 2>&1; sleep 3; pgrep Xvfb >/dev/null && echo 'Xvfb running' || echo 'Xvfb DEAD'; pgrep {bin_name} >/dev/null && echo 'app running' || echo 'app DEAD — see ~/.utm-dev-run/run.log'; true"
         ),
         profiles::GuestOs::Windows => format!(
-            // Start-Process detaches; redirect both streams to the run log.
-            // The .err file is rolled into run.log on read by `vm logs`.
-            r#"powershell -NoProfile -Command ^
-              "if (-not (Test-Path '$env:USERPROFILE\.utm-dev-run')) {{ New-Item -ItemType Directory -Path '$env:USERPROFILE\.utm-dev-run' | Out-Null }}; ^
-               $log = '$env:USERPROFILE\.utm-dev-run\run.log'; ^
-               $err = '$env:USERPROFILE\.utm-dev-run\run.log.err'; ^
-               $p = Start-Process -FilePath '{bin}' -RedirectStandardOutput $log -RedirectStandardError $err -PassThru; ^
-               Write-Output ('PID=' + $p.Id)""#
+            // Start-Process detaches; redirect stdout/stderr to separate
+            // files so we can also surface stderr in vm logs.
+            //
+            // Single line (no `^` continuation): cmd's `^<nl>` line-join
+            // doesn't survive SSH delivery — the remote cmd sees literal
+            // `^\n` and treats `-Command` as parameter-less, producing
+            // PowerShell's help text. PowerShell's `;` works as a statement
+            // separator inside the -Command string; that's all we need.
+            r#"powershell -NoProfile -Command "$d='%USERPROFILE%\.utm-dev-run'; if (-not (Test-Path $d)) {{ New-Item -ItemType Directory -Path $d | Out-Null }}; $p = Start-Process -FilePath '{bin}' -RedirectStandardOutput ($d + '\\run.log') -RedirectStandardError ($d + '\\run.log.err') -PassThru; Write-Output ('PID=' + $p.Id)""#
         ),
     };
 
