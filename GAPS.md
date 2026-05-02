@@ -72,3 +72,20 @@ The full pipeline is **proven against [utm-dev-demo](https://github.com/joeblew9
 - **vm run process detachment on Linux** — bypassed libssh2 + `-tt` (both kill backgrounded children); use direct ssh subprocess + setsid -f. `pkill <name>` (not `-f`) to avoid pkill matching its own shell's command line.
 - **Windows vm run PowerShell single-line** — cmd's `^<nl>` continuation doesn't survive SSH delivery.
 - **Dead code cleanup** — many removed; see git log.
+
+## PowerShell quoting in switch_rustup install step (2026-05-02)
+
+The `switch_rustup` PowerShell call in `src/vm/build.rs` (in the Windows
+`mise install` step) fails with `MissingEndCurlyBrace` when the second
+`powershell -NoProfile -Command "..."` call is chained via `&&`. cmd.exe's
+quote handling combined with PowerShell's own quoting confuses things.
+
+Discovered while running `utm-dev windows build --release` against
+utm-dev-cli itself (plain-cargo path verification). The `Project kind:
+cargo` dispatch worked correctly; failure was upstream in the mise
+install step, NOT in the new plain-cargo branch.
+
+Likely fix: combine both rustup operations into a single
+`powershell -NoProfile -File <script.ps1>` call (write a small .ps1
+to the VM via vm push, then invoke once), OR semicolon-chain inside a
+single PowerShell -Command instead of cmd-level `&&`.

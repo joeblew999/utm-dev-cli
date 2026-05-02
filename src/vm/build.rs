@@ -1,5 +1,10 @@
-/// Sync project to VM, run `cargo tauri build --target <triple>` for each
+/// Sync project to VM, run `cargo tauri build --target <triple>` (or plain
+/// `cargo build --release --target <triple>` for non-Tauri projects) for each
 /// requested architecture, pull artifacts back.
+///
+/// Tauri vs plain detection: presence of `src-tauri/` directory (the standard
+/// Tauri layout). Plain Rust projects (no `src-tauri/`) build a single binary
+/// per triple, named after `[package].name` in Cargo.toml.
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -8,6 +13,50 @@ use std::time::Instant;
 use crate::cli::BuildTarget;
 use super::profiles::{GuestOs, VmProfile};
 use super::ssh;
+
+/// Project layout detection — drives whether we run `cargo tauri build`
+/// (with bundle outputs) or plain `cargo build --release` (with a single
+/// binary output).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ProjectKind {
+    Tauri,  // has src-tauri/ — produces .msi/.exe/.deb/.AppImage bundles
+    Cargo,  // plain Rust — produces a single binary at target/<triple>/release/<name>
+}
+
+fn detect_project_kind(project_dir: &Path) -> ProjectKind {
+    if project_dir.join("src-tauri").is_dir()
+        || project_dir.join("src-tauri").join("tauri.conf.json").is_file()
+    {
+        ProjectKind::Tauri
+    } else {
+        ProjectKind::Cargo
+    }
+}
+
+/// Extract `[package].name` from Cargo.toml. Used to know what binary file
+/// to pull back for plain cargo projects. Substring-grep approach (no toml
+/// crate dep) — same shape as preflight_mise_toml.
+fn cargo_package_name(project_dir: &Path) -> Result<String> {
+    let path = project_dir.join("Cargo.toml");
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading {}", path.display()))?;
+
+    let mut in_package = false;
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.starts_with("[package]") { in_package = true; continue; }
+        if line.starts_with("[") { in_package = false; continue; }
+        if !in_package { continue; }
+        // Match: name = "foo" / name="foo" / name = 'foo'
+        if let Some(rest) = line.strip_prefix("name").and_then(|s| s.trim_start().strip_prefix("=")) {
+            let val = rest.trim().trim_matches(|c| c == '"' || c == '\'');
+            if !val.is_empty() {
+                return Ok(val.to_string());
+            }
+        }
+    }
+    bail!("Cargo.toml has no [package].name")
+}
 
 /// Format an elapsed duration as `Hh Mm Ss` or `Mm Ss` or `Ss`.
 fn fmt_elapsed(d: std::time::Duration) -> String {
@@ -40,11 +89,18 @@ fn triples(target: BuildTarget, os: GuestOs) -> Vec<&'static str> {
 pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Result<()> {
     let total_start = Instant::now();
 
+    // Detect Tauri vs plain cargo. Drives the build command, the toolchain
+    // requirements (tauri-cli only needed for Tauri), and the artifact
+    // location (bundle/ vs release/<name>).
+    let kind = detect_project_kind(project_dir);
+    let kind_label = match kind { ProjectKind::Tauri => "Tauri", ProjectKind::Cargo => "cargo" };
+    println!("→ Project kind: {kind_label}");
+
     // Pre-flight: verify the project's mise.toml declares the toolchain we need.
-    // Without rust + tauri-cli pinned, mise install inside the VM will either
-    // skip what we need or compile against the wrong default. Bail in 50 ms
-    // here instead of after 25 min in the VM.
-    preflight_mise_toml(project_dir)?;
+    // Without rust pinned (and tauri-cli for Tauri projects), mise install
+    // inside the VM will either skip what we need or compile against the wrong
+    // default. Bail in 50 ms here instead of after 25 min in the VM.
+    preflight_mise_toml(project_dir, kind)?;
     let project_name = project_dir
         .file_name()
         .context("project dir has no name")?
@@ -277,18 +333,32 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         .nth(1)
         .map(|l| l.trim())
         .unwrap_or("DEFAULT");
+    // Default target dir differs by project kind:
+    //   Tauri: target lives under src-tauri/ (per Tauri convention)
+    //   Plain cargo: target/ at workspace root
     let target_root = if target_dir_raw == "DEFAULT" || target_dir_raw.is_empty() {
-        format!("{vm_project_dir}{sep}src-tauri{sep}target")
+        match kind {
+            ProjectKind::Tauri => format!("{vm_project_dir}{sep}src-tauri{sep}target"),
+            ProjectKind::Cargo => format!("{vm_project_dir}{sep}target"),
+        }
     } else {
         target_dir_raw.to_string()
+    };
+
+    // For plain cargo we need the binary name to know what file to pull back.
+    let cargo_bin_name = if kind == ProjectKind::Cargo {
+        Some(cargo_package_name(project_dir)?)
+    } else {
+        None
     };
 
     // ── Build per target ──────────────────────────────────────────────────────
 
     let triples = triples(target, profile.os);
     let platform_label = match profile.os { GuestOs::Windows => "Windows", GuestOs::Linux => "Linux" };
+    let kind_word = match kind { ProjectKind::Tauri => "Tauri ", ProjectKind::Cargo => "" };
     println!(
-        "→ Building Tauri {platform_label} app for: {} (first build per arch may take 10–30 min — tail with: vm logs --name {} --follow)",
+        "→ Building {kind_word}{platform_label} app for: {} (first build per arch may take 10–30 min — tail with: vm logs --name {} --follow)",
         triples.join(", "),
         profile.name,
     );
@@ -314,7 +384,9 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
             bail!("rustup target add {triple} failed (exit {code})");
         }
 
-        // 2. cargo tauri build --target <triple>
+        // 2. The build itself. Tauri uses cargo-tauri (which produces .msi/.deb
+        //    bundles); plain cargo uses cargo build --release (which produces
+        //    a single binary at target/<triple>/release/<name>).
         //    On Windows: use the x64 toolchain (Hostarm64\x64) since the
         //    only supported triple is x86_64-pc-windows-msvc.
         //    For Linux x86_64 cross-compile: point cargo at the multiarch
@@ -325,19 +397,18 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         //    `sccache` — cargo invokes it as `sccache rustc ...`. If sccache
         //    isn't on PATH, cargo errors with "no such file"; we don't want
         //    that. Strategy: set RUSTC_WRAPPER only if sccache is present.
-        //    On Linux this is `command -v sccache`; on Windows we use a
-        //    plain conditional `set` *outside* the build parens (a `for /f`
-        //    inside parens confuses cmd.exe and breaks the whole group).
+        let cargo_subcmd = match kind {
+            ProjectKind::Tauri => format!("cargo tauri build --target {triple}"),
+            ProjectKind::Cargo => format!("cargo build --release --target {triple}"),
+        };
         let build_cmd = if profile.os == GuestOs::Windows {
-            // Probe sccache once via a separate command, set env at the
-            // outer cmd scope, then run the build inside parens.
             format!(
-                r#"cd /d "{vm_project_dir}" && (where sccache >nul 2>&1 && set RUSTC_WRAPPER=sccache || ver >nul) && ({win_msvc_x64} && {mise} exec -- cargo tauri build --target {triple}) >> "{log_path_h}" 2>&1"#
+                r#"cd /d "{vm_project_dir}" && (where sccache >nul 2>&1 && set RUSTC_WRAPPER=sccache || ver >nul) && ({win_msvc_x64} && {mise} exec -- {cargo_subcmd}) >> "{log_path_h}" 2>&1"#
             )
         } else {
             let linux_cross_env = linux_cross_env_for(triple);
             format!(
-                r#"{linux_tee}cd "{vm_project_dir}" && export RUSTC_WRAPPER="$(command -v sccache 2>/dev/null)" && {linux_cross_env}{mise} exec -- cargo tauri build --target {triple}"#
+                r#"{linux_tee}cd "{vm_project_dir}" && export RUSTC_WRAPPER="$(command -v sccache 2>/dev/null)" && {linux_cross_env}{mise} exec -- {cargo_subcmd}"#
             )
         };
         let t_build = Instant::now();
@@ -349,71 +420,52 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
                 profile.name
             );
         }
-        println!("✓ Build complete: {triple}  ⌚ cargo tauri build: {}", fmt_elapsed(t_build.elapsed()));
+        println!("✓ Build complete: {triple}  ⌚ {cargo_subcmd}: {}", fmt_elapsed(t_build.elapsed()));
 
-        // 3. Pull this triple's bundle into .build/{platform}/{arch}/
+        // 3. Pull this triple's artifacts into .build/{platform}/{arch}/
         let t_pull = Instant::now();
         let arch_label = arch_label_for(triple);
         let arch_dir = artifacts_dir.join(arch_label);
         std::fs::create_dir_all(&arch_dir)?;
 
-        let bundle_path = format!("{target_root}{sep}{triple}{sep}release{sep}bundle");
-        println!("  bundle path: {bundle_path}");
+        match kind {
+            ProjectKind::Tauri => {
+                // Tauri produces target/<triple>/release/bundle/{deb,msi,...}/
+                let bundle_path = format!("{target_root}{sep}{triple}{sep}release{sep}bundle");
+                println!("  bundle path: {bundle_path}");
+                pull_dir(profile, &session, &bundle_path, &arch_dir, triple)?;
 
-        let (out, code) = if profile.os == GuestOs::Linux {
-            ssh::exec_with_exit(
-                &session,
-                &format!(r#"cd "{bundle_path}" && tar -czf ~/artifacts.tar.gz ."#),
-            )?
-        } else {
-            // `cd /d` to switch drives — without /d, cd silently no-ops if
-            // bundle_path is on a different drive than the cwd, which it is
-            // when CARGO_TARGET_DIR=D:\target. tar then archives . (=cwd =
-            // probably home dir) and produces an empty/wrong tarball.
-            ssh::exec_with_exit(
-                &session,
-                &format!(r#"cd /d "{bundle_path}" && tar -czf "%USERPROFILE%\artifacts.tar.gz" ."#),
-            )?
-        };
-        if code != 0 { bail!("Failed to archive artifacts on VM ({triple}):\n{out}"); }
+                // Show summary of what landed
+                let exts: &[&str] = match profile.os {
+                    GuestOs::Linux   => &["deb", "AppImage", "rpm"],
+                    GuestOs::Windows => &["msi", "exe"],
+                };
+                for path in walk_files(&arch_dir)? {
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    if exts.contains(&ext) {
+                        let size = std::fs::metadata(&path)?.len();
+                        println!("  {} ({:.1} MB)", path.display(), size as f64 / 1_048_576.0);
+                    }
+                }
+            }
+            ProjectKind::Cargo => {
+                // Plain cargo produces a single binary at
+                // target/<triple>/release/<name>[.exe]
+                let bin_name = cargo_bin_name.as_ref().expect("cargo_bin_name set for ProjectKind::Cargo");
+                let bin_filename = match profile.os {
+                    GuestOs::Linux   => bin_name.clone(),
+                    GuestOs::Windows => format!("{bin_name}.exe"),
+                };
+                let bin_path = format!("{target_root}{sep}{triple}{sep}release{sep}{bin_filename}");
+                println!("  binary path: {bin_path}");
 
-        let remote_artifacts = match profile.os {
-            GuestOs::Linux   => format!("/home/{}/artifacts.tar.gz", profile.user),
-            GuestOs::Windows => "artifacts.tar.gz".to_string(),
-        };
-        let local_tar = arch_dir.join("artifacts.tar.gz");
-        ssh::download(profile, &remote_artifacts, &local_tar)?;
-
-        let _ = if profile.os == GuestOs::Linux {
-            ssh::exec(&session, "rm ~/artifacts.tar.gz")
-        } else {
-            ssh::exec(&session, r#"del "%USERPROFILE%\artifacts.tar.gz""#)
-        };
-
-        let status = Command::new("tar")
-            .args([
-                "-xzf",
-                local_tar.to_str().unwrap(),
-                "-C",
-                arch_dir.to_str().unwrap(),
-            ])
-            .status()
-            .context("extracting artifacts")?;
-        if !status.success() { bail!("Failed to extract artifacts locally for {triple}"); }
-        let _ = std::fs::remove_file(&local_tar);
-
-        println!("✓ Artifacts in {}:", arch_dir.display());
-        let exts: &[&str] = match profile.os {
-            GuestOs::Linux   => &["deb", "AppImage", "rpm"],
-            GuestOs::Windows => &["msi", "exe"],
-        };
-        for path in walk_files(&arch_dir)? {
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if exts.contains(&ext) {
-                let size = std::fs::metadata(&path)?.len();
-                println!("  {} ({:.1} MB)", path.display(), size as f64 / 1_048_576.0);
+                let local_bin = arch_dir.join(&bin_filename);
+                ssh::download(profile, &bin_path, &local_bin)?;
+                let size = std::fs::metadata(&local_bin)?.len();
+                println!("  {} ({:.1} MB)", local_bin.display(), size as f64 / 1_048_576.0);
             }
         }
+
         println!("  ⌚ pull+extract: {} | target total: {}",
             fmt_elapsed(t_pull.elapsed()),
             fmt_elapsed(t_target.elapsed()),
@@ -421,6 +473,59 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     }
 
     println!("\n══ Done. Total: {} ══", fmt_elapsed(total_start.elapsed()));
+    Ok(())
+}
+
+/// Pull a directory (e.g. Tauri's bundle/) from VM to host by tar+scp+untar.
+/// Used for Tauri builds where the output is a tree of bundle artifacts.
+/// Plain cargo builds use ssh::download for a single binary file directly.
+fn pull_dir(
+    profile: &VmProfile,
+    session: &ssh2::Session,
+    remote_dir: &str,
+    local_dir: &Path,
+    triple: &str,
+) -> Result<()> {
+    let (out, code) = if profile.os == GuestOs::Linux {
+        ssh::exec_with_exit(
+            session,
+            &format!(r#"cd "{remote_dir}" && tar -czf ~/artifacts.tar.gz ."#),
+        )?
+    } else {
+        // `cd /d` to switch drives — without /d, cd silently no-ops if
+        // remote_dir is on a different drive than the cwd, which it is
+        // when CARGO_TARGET_DIR=D:\target.
+        ssh::exec_with_exit(
+            session,
+            &format!(r#"cd /d "{remote_dir}" && tar -czf "%USERPROFILE%\artifacts.tar.gz" ."#),
+        )?
+    };
+    if code != 0 { bail!("Failed to archive artifacts on VM ({triple}):\n{out}"); }
+
+    let remote_artifacts = match profile.os {
+        GuestOs::Linux   => format!("/home/{}/artifacts.tar.gz", profile.user),
+        GuestOs::Windows => "artifacts.tar.gz".to_string(),
+    };
+    let local_tar = local_dir.join("artifacts.tar.gz");
+    ssh::download(profile, &remote_artifacts, &local_tar)?;
+
+    let _ = if profile.os == GuestOs::Linux {
+        ssh::exec(session, "rm ~/artifacts.tar.gz")
+    } else {
+        ssh::exec(session, r#"del "%USERPROFILE%\artifacts.tar.gz""#)
+    };
+
+    let status = Command::new("tar")
+        .args([
+            "-xzf",
+            local_tar.to_str().unwrap(),
+            "-C",
+            local_dir.to_str().unwrap(),
+        ])
+        .status()
+        .context("extracting artifacts")?;
+    if !status.success() { bail!("Failed to extract artifacts locally for {triple}"); }
+    let _ = std::fs::remove_file(&local_tar);
     Ok(())
 }
 
@@ -437,7 +542,10 @@ fn arch_label_for(triple: &str) -> &'static str {
 /// Pre-flight validation: ensure the project's mise.toml declares the
 /// toolchain we need. We only check for the markers; full TOML parsing
 /// adds a dependency that's not worth the cost for a substring match.
-fn preflight_mise_toml(project_dir: &Path) -> Result<()> {
+///
+/// Tauri projects need rust + cargo:tauri-cli. Plain cargo projects only
+/// need rust.
+fn preflight_mise_toml(project_dir: &Path, kind: ProjectKind) -> Result<()> {
     let path = project_dir.join("mise.toml");
     if !path.exists() {
         bail!(
@@ -452,19 +560,26 @@ fn preflight_mise_toml(project_dir: &Path) -> Result<()> {
         let t = l.trim_start();
         t.starts_with("rust ") || t.starts_with("rust=") || t.starts_with("rust\t")
     });
-    let has_tauri_cli = content.contains("tauri-cli");
 
     let mut missing: Vec<&str> = Vec::new();
     if !has_rust { missing.push("rust"); }
-    if !has_tauri_cli { missing.push("\"cargo:tauri-cli\""); }
+    if kind == ProjectKind::Tauri && !content.contains("tauri-cli") {
+        missing.push("\"cargo:tauri-cli\"");
+    }
     if !missing.is_empty() {
+        let example = match kind {
+            ProjectKind::Tauri => {
+                "    rust              = \"stable\"\n    \
+                 \"cargo:tauri-cli\" = \"2\""
+            }
+            ProjectKind::Cargo => "    rust = \"stable\"",
+        };
         bail!(
             "mise.toml is missing required pins: {}.\n  \
-             Add to [tools]:\n    \
-             rust              = \"stable\"\n    \
-             \"cargo:tauri-cli\" = \"2\"\n  \
+             Add to [tools]:\n{}\n  \
              Or run: utm-dev init",
-            missing.join(", ")
+            missing.join(", "),
+            example
         );
     }
     Ok(())
