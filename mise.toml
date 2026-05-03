@@ -66,11 +66,34 @@ if not ($demo | path exists) {
 }
 cargo build --release
 let utm_dev = (pwd | path join "target/release/utm-dev")
+# Trust the demo's mise.toml so `utm-dev mac build`'s internal `mise install`
+# doesn't bail on untrusted-config errors. Idempotent — no-op if already trusted.
+^mise trust $demo
 cd $demo
 ^$utm_dev mac build --release
 print "✓ tauri mac build via utm-dev"
 """
 
+[tasks."e2e:windows-run"]
+description = "smoke: copy the already-built .exe back to windows-build VM, run it, verify --version output. Skips if no .exe at .build/windows/x86_64/."
+shell = "nu -c"
+run = '''
+let exe = ".build/windows/x86_64/utm-dev.exe"
+if not ($exe | path exists) {
+  print $"  (skip) ($exe) not present — run `utm-dev windows build --release` first"
+  return
+}
+let ssh_opts = ["-p", "2222", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", "BatchMode=yes"]
+^scp -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes $exe 'vagrant@localhost:utm-dev.exe'
+let out = (^ssh ...$ssh_opts vagrant@localhost 'C:\Users\vagrant\utm-dev.exe --version' | str trim)
+print $"  windows VM ran utm-dev.exe and said: ($out)"
+if not ($out | str starts-with "utm-dev") {
+  print "  ✗ unexpected output"
+  exit 1
+}
+print "✓ windows .exe runs on the windows-build VM"
+'''
+
 [tasks."e2e:smoke"]
-description = "all e2e smoke tests — pre-push regression check (~30 sec when warm; demo-mac skips if not cloned)"
-depends = ["e2e:doctor", "e2e:clean-dry", "e2e:mac", "e2e:demo-mac"]
+description = "all e2e smoke tests — pre-push regression check (~30 sec when warm; demo-mac skips if not cloned, windows-run skips if no .exe built)"
+depends = ["e2e:doctor", "e2e:clean-dry", "e2e:mac", "e2e:demo-mac", "e2e:windows-run"]
