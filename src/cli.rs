@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::cmd::{clean, doctor, init, mcp, platform, screenshot, setup, vm};
+use crate::cmd::{clean, doctor, init, mcp, platform, screenshot, setup, validate, vm};
 
 /// Target architecture for VM builds.
 ///
@@ -72,6 +72,25 @@ pub enum Commands {
         port: Option<u16>,
     },
 
+    /// Compare a screenshot against a golden PNG. Exits non-zero if the match
+    /// percentage drops below `--tolerance` (default 95%). Writes a red/green
+    /// diff PNG showing drift when validation fails. Pairs with `screenshot`
+    /// for UI regression.
+    Validate {
+        /// Path to the actual screenshot (PNG)
+        #[arg(long)]
+        actual: String,
+        /// Path to the golden template (PNG)
+        #[arg(long)]
+        golden: String,
+        /// Match percentage required to pass (0–100)
+        #[arg(long, default_value_t = 95.0)]
+        tolerance: f64,
+        /// Where to write the diff PNG when validation fails
+        #[arg(long)]
+        diff: Option<String>,
+    },
+
     /// Platform build/dev commands
     #[command(subcommand)]
     Mac(platform::MacCommands),
@@ -109,6 +128,17 @@ pub fn run() -> anyhow::Result<()> {
         Commands::Clean { deep } => clean::run(deep),
         Commands::Mcp => mcp::run(),
         Commands::Screenshot { out, port } => screenshot::run(out.as_deref(), port),
+        Commands::Validate {
+            actual,
+            golden,
+            tolerance,
+            diff,
+        } => validate::run(
+            std::path::Path::new(&actual),
+            std::path::Path::new(&golden),
+            tolerance,
+            diff.as_deref().map(std::path::Path::new),
+        ),
         Commands::Mac(cmd) => platform::run_mac(cmd),
         Commands::Ios(cmd) => platform::run_ios(cmd),
         Commands::Android(cmd) => platform::run_android(cmd),

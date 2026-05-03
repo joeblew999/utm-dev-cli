@@ -5,4 +5,5 @@ pub mod mcp;
 pub mod platform;
 pub mod screenshot;
 pub mod setup;
+pub mod validate;
 pub mod vm;
