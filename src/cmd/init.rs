@@ -1,6 +1,6 @@
 /// `utm-dev init` — append [tools] (and optionally Android [env]) to mise.toml.
 /// Idempotent: detects existing utm-dev marker, or warns if [tools]/[env] already present.
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::fs;
 use std::io::Write;
 
@@ -56,7 +56,9 @@ pub fn run(android: bool) -> Result<()> {
         return Ok(());
     }
 
-    let has_tools = content.lines().any(|l| l.trim_start().starts_with("[tools]"));
+    let has_tools = content
+        .lines()
+        .any(|l| l.trim_start().starts_with("[tools]"));
     let has_env = content.lines().any(|l| l.trim_start().starts_with("[env]"));
 
     if has_tools || has_env {
@@ -78,18 +80,30 @@ pub fn run(android: bool) -> Result<()> {
             println!("  # In your [env] section:");
             println!(r#"  ANDROID_HOME = "{{{{env.HOME}}}}/.android-sdk""#);
             println!(r#"  NDK_HOME = "{{{{env.HOME}}}}/.android-sdk/ndk/27.2.12479018""#);
-            println!(r#"  JAVA_HOME = "{{{{env.HOME}}}}/.local/share/mise/installs/java/temurin-17.0.18+8""#);
-            println!(r#"  _.path = ["{{{{env.HOME}}}}/.android-sdk/platform-tools", "{{{{env.HOME}}}}/.android-sdk/emulator", "{{{{env.HOME}}}}/.android-sdk/cmdline-tools/latest/bin"]"#);
+            println!(
+                r#"  JAVA_HOME = "{{{{env.HOME}}}}/.local/share/mise/installs/java/temurin-17.0.18+8""#
+            );
+            println!(
+                r#"  _.path = ["{{{{env.HOME}}}}/.android-sdk/platform-tools", "{{{{env.HOME}}}}/.android-sdk/emulator", "{{{{env.HOME}}}}/.android-sdk/cmdline-tools/latest/bin"]"#
+            );
             println!();
         }
         return Ok(());
     }
 
-    let block = if android { BLOCK_ANDROID } else { BLOCK_MINIMAL };
+    let block = if android {
+        BLOCK_ANDROID
+    } else {
+        BLOCK_MINIMAL
+    };
     let mut f = fs::OpenOptions::new().append(true).open(&mise_toml)?;
     f.write_all(block.as_bytes())?;
 
-    let label = if android { "[tools] and [env] (Android)" } else { "[tools] (minimal)" };
+    let label = if android {
+        "[tools] and [env] (Android)"
+    } else {
+        "[tools] (minimal)"
+    };
     println!("✓ Added {label} to {}", mise_toml.display());
     println!();
     println!("Next:");

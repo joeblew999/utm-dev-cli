@@ -1,13 +1,13 @@
 /// First-run bootstrap: installs build tools, Rust, and mise in a fresh VM.
 /// Idempotent — safe to run multiple times (checks before installing).
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::profiles::{BootstrapMode, GuestOs, VmProfile};
 use super::{ssh, winrm};
 
 pub fn run(profile: &VmProfile) -> Result<()> {
     match profile.os {
-        GuestOs::Linux   => {
+        GuestOs::Linux => {
             // Linux is reachable via SSH right after wait_for_boot succeeds.
             let session = ssh::connect(profile)?;
             linux(&session, profile)
@@ -19,7 +19,10 @@ pub fn run(profile: &VmProfile) -> Result<()> {
 // ── Linux bootstrap ───────────────────────────────────────────────────────────
 
 fn linux(session: &ssh::Session, profile: &VmProfile) -> Result<()> {
-    println!("→ Bootstrapping Linux VM (mode: {:?})...", profile.bootstrap);
+    println!(
+        "→ Bootstrapping Linux VM (mode: {:?})...",
+        profile.bootstrap
+    );
 
     // Install host's public key so the user can `code --remote ssh-remote+...`
     // (and re-runs of `vm exec`) without password prompts. Idempotent.
@@ -36,15 +39,23 @@ fn linux(session: &ssh::Session, profile: &VmProfile) -> Result<()> {
     // Full bootstrap — check before each step (idempotent)
 
     // Step 1: build-essential + curl + git
-    let installed = ssh::exec(session,
-        "dpkg -s build-essential 2>/dev/null | grep -c 'ok installed'"
-    ).unwrap_or_default();
+    let installed = ssh::exec(
+        session,
+        "dpkg -s build-essential 2>/dev/null | grep -c 'ok installed'",
+    )
+    .unwrap_or_default();
     if installed.trim() != "1" {
-        run_step(session, "update packages",
-            "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq")?;
-        run_step(session, "install build deps",
+        run_step(
+            session,
+            "update packages",
+            "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq",
+        )?;
+        run_step(
+            session,
+            "install build deps",
             "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-             build-essential curl git pkg-config")?;
+             build-essential curl git pkg-config",
+        )?;
     } else {
         println!("  ✓ build-essential already installed");
     }
@@ -56,9 +67,11 @@ fn linux(session: &ssh::Session, profile: &VmProfile) -> Result<()> {
     // already and would skip the whole apt-install if we keyed on that,
     // missing xvfb / scrot. apt-get install is idempotent — passing tools
     // that are already installed is a no-op, fast (~1s).
-    let xvfb_present = ssh::exec(session,
-        "command -v Xvfb >/dev/null 2>&1 && echo present || echo missing"
-    ).unwrap_or_default();
+    let xvfb_present = ssh::exec(
+        session,
+        "command -v Xvfb >/dev/null 2>&1 && echo present || echo missing",
+    )
+    .unwrap_or_default();
     if !xvfb_present.contains("present") {
         // libwebkit2gtk + GTK family — Tauri build deps.
         // xvfb: virtual framebuffer X server for headless GUI launches
@@ -69,27 +82,35 @@ fn linux(session: &ssh::Session, profile: &VmProfile) -> Result<()> {
         // openbox: tiny window manager (~1 MB). Without a WM, GTK windows
         // open but don't get mapped/composited on bare Xvfb, so vm screenshot
         // returns a black png. With openbox running on :99, windows appear.
-        run_step(session, "install Tauri Linux deps + xvfb + scrot + openbox",
+        run_step(
+            session,
+            "install Tauri Linux deps + xvfb + scrot + openbox",
             "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
              libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
              librsvg2-dev libssl-dev libxdo-dev patchelf wget file \
              libsoup-3.0-dev libjavascriptcoregtk-4.1-dev xvfb xdg-utils \
-             scrot openbox")?;
+             scrot openbox",
+        )?;
     } else {
         println!("  ✓ Tauri deps + xvfb + scrot already installed");
     }
 
     // Step 3: mise
-    let mise = ssh::exec(session,
-        "~/.local/bin/mise --version 2>/dev/null || mise --version 2>/dev/null || echo missing"
-    ).unwrap_or_default();
+    let mise = ssh::exec(
+        session,
+        "~/.local/bin/mise --version 2>/dev/null || mise --version 2>/dev/null || echo missing",
+    )
+    .unwrap_or_default();
     if mise.contains("missing") || mise.is_empty() {
         run_step(session, "install mise", "curl https://mise.run | sh")?;
     } else {
         println!("  ✓ mise already installed ({})", mise.trim());
     }
-    run_step(session, "activate mise in .bashrc",
-        r#"grep -q 'mise activate' ~/.bashrc || echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc"#)?;
+    run_step(
+        session,
+        "activate mise in .bashrc",
+        r#"grep -q 'mise activate' ~/.bashrc || echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc"#,
+    )?;
 
     // (Rust is installed by the project's mise.toml at vm build time, not
     // here — see AGENTS.md "Source-of-truth invariant for VM bootstrap".)
@@ -99,9 +120,11 @@ fn linux(session: &ssh::Session, profile: &VmProfile) -> Result<()> {
     // cargo-binstall binary directly (no compile) and persists the mise
     // setting so cargo: tools fetch prebuilt binaries from GitHub releases
     // instead of compiling from source.
-    let binstall_present = ssh::exec(session,
-        "[ -x \"$HOME/.cargo/bin/cargo-binstall\" ] && echo present || echo missing"
-    ).unwrap_or_default();
+    let binstall_present = ssh::exec(
+        session,
+        "[ -x \"$HOME/.cargo/bin/cargo-binstall\" ] && echo present || echo missing",
+    )
+    .unwrap_or_default();
     if !binstall_present.contains("present") {
         let arch = ssh::exec(session, "uname -m").unwrap_or_default();
         let target = if arch.trim() == "aarch64" {
@@ -112,29 +135,42 @@ fn linux(session: &ssh::Session, profile: &VmProfile) -> Result<()> {
         let url = format!(
             "https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-{target}.tgz"
         );
-        run_step(session, "install cargo-binstall (binstall fast-path)",
-            &format!("mkdir -p ~/.cargo/bin && curl -sSfL {url} | tar -xz -C ~/.cargo/bin && chmod +x ~/.cargo/bin/cargo-binstall"))?;
+        run_step(
+            session,
+            "install cargo-binstall (binstall fast-path)",
+            &format!(
+                "mkdir -p ~/.cargo/bin && curl -sSfL {url} | tar -xz -C ~/.cargo/bin && chmod +x ~/.cargo/bin/cargo-binstall"
+            ),
+        )?;
     } else {
         println!("  ✓ cargo-binstall already installed");
     }
     // mise config: cargo_binstall = true (idempotent).
-    run_step(session, "configure mise cargo_binstall = true",
+    run_step(
+        session,
+        "configure mise cargo_binstall = true",
         "mkdir -p ~/.config/mise && \
          touch ~/.config/mise/config.toml && \
          (grep -q 'cargo_binstall' ~/.config/mise/config.toml || \
-          printf '\\n[settings]\\ncargo_binstall = true\\n' >> ~/.config/mise/config.toml)")?;
+          printf '\\n[settings]\\ncargo_binstall = true\\n' >> ~/.config/mise/config.toml)",
+    )?;
 
     // Step 4: linux-dev extras (Debian 12 with GNOME).
     // Marker is fonts-noto-color-emoji because xdg-utils is already
     // installed for ALL Linux profiles by step 2.
     if profile.name == "linux-dev" {
-        let emoji = ssh::exec(session,
-            "dpkg -s fonts-noto-color-emoji 2>/dev/null | grep -c 'ok installed'"
-        ).unwrap_or_default();
+        let emoji = ssh::exec(
+            session,
+            "dpkg -s fonts-noto-color-emoji 2>/dev/null | grep -c 'ok installed'",
+        )
+        .unwrap_or_default();
         if emoji.trim() != "1" {
-            run_step(session, "install desktop extras (fonts-noto-color-emoji)",
+            run_step(
+                session,
+                "install desktop extras (fonts-noto-color-emoji)",
                 "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-                 fonts-noto-color-emoji")?;
+                 fonts-noto-color-emoji",
+            )?;
         } else {
             println!("  ✓ desktop extras already installed");
         }
@@ -161,7 +197,9 @@ fn install_host_pubkey(session: &ssh::Session) -> Result<()> {
     let pub_key = match find_public_key() {
         Ok(k) => k,
         Err(_) => {
-            println!("  ⚠ no SSH public key in ~/.ssh — VS Code Remote SSH will prompt for password");
+            println!(
+                "  ⚠ no SSH public key in ~/.ssh — VS Code Remote SSH will prompt for password"
+            );
             return Ok(());
         }
     };
@@ -209,9 +247,8 @@ fn windows(profile: &VmProfile) -> Result<()> {
         "Get-Service sshd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status",
     )?;
     if !sshd_state.stdout.trim().eq_ignore_ascii_case("Running") {
-        let cap = w.run_ps(
-            "(Get-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).State",
-        )?;
+        let cap =
+            w.run_ps("(Get-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).State")?;
         if !cap.stdout.contains("Installed") {
             println!("  Installing OpenSSH Server (~3 min, downloads from Windows Update)...");
             w.run_elevated(
@@ -313,8 +350,11 @@ Restart-Service sshd -ErrorAction SilentlyContinue
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile 'C:\vs_buildtools.exe' -UseBasicParsing
 ")?;
-        println!("  Installing VS Build Tools + C++ workload + ARM64 compiler (10-15 min on ARM64)...");
-        w.run_elevated(r"
+        println!(
+            "  Installing VS Build Tools + C++ workload + ARM64 compiler (10-15 min on ARM64)..."
+        );
+        w.run_elevated(
+            r"
 $p = Start-Process -FilePath 'C:\vs_buildtools.exe' -ArgumentList @(
     '--add', 'Microsoft.VisualStudio.Workload.VCTools',
     '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
@@ -323,7 +363,9 @@ $p = Start-Process -FilePath 'C:\vs_buildtools.exe' -ArgumentList @(
     '--includeRecommended', '--quiet', '--norestart', '--wait'
 ) -Wait -NoNewWindow -PassThru
 $p.ExitCode | Out-File 'C:\vs-exit.txt'
-", 1800)?;
+",
+            1800,
+        )?;
         println!("  ✓ VS Build Tools installed (with ARM64 toolchain)");
     } else {
         println!("  ✓ VS Build Tools already installed (ARM64 toolchain present)");
@@ -402,7 +444,8 @@ if ($path -notmatch [regex]::Escape($dest)) {
     // Step 7b: persist mise's `cargo_binstall = true` setting in the user
     // mise config. Belt and braces alongside MISE_CARGO_BINSTALL env var
     // — env vars are scoped to a process, settings file is permanent.
-    w.run_ps(r#"
+    w.run_ps(
+        r#"
 $cfg = "$env:USERPROFILE\AppData\Roaming\mise\config.toml"
 $dir = Split-Path $cfg
 if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -411,7 +454,8 @@ if (-not (Test-Path $cfg)) {
 } elseif ((Get-Content $cfg -Raw) -notmatch 'cargo_binstall') {
     Add-Content $cfg "`n[settings]`ncargo_binstall = true`n" -Encoding UTF8
 }
-"#)?;
+"#,
+    )?;
     println!("  ✓ mise config: cargo_binstall = true");
 
     // Step 7: switch rustup default-host to x86_64.
@@ -437,7 +481,8 @@ if (-not (Test-Path $cfg)) {
         // both. We don't run this if rustup isn't anywhere yet; mise will
         // place it later and we'll set the host then. But if rust is
         // already managed by mise, switch the default host now.
-        w.run_ps(r#"
+        w.run_ps(
+            r#"
 $candidates = @(
   'D:\mise\installs\rust\stable\rustup.exe',
   "$env:USERPROFILE\.local\share\mise\installs\rust\stable\rustup.exe"
@@ -447,7 +492,8 @@ if ($rustup) {
   & $rustup set default-host x86_64-pc-windows-msvc
   & $rustup default --force-non-host stable-x86_64-pc-windows-msvc
 }
-"#)?;
+"#,
+        )?;
         println!("  ✓ rustup default-host set to x86_64-pc-windows-msvc (ARM64 host workaround)");
     }
 
@@ -499,4 +545,3 @@ fn find_public_key() -> Result<String> {
     }
     bail!("No SSH public key found in ~/.ssh/ — generate one with: ssh-keygen -t ed25519")
 }
-

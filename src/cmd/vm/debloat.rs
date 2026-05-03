@@ -18,6 +18,7 @@ use crate::vm::{profiles, ssh};
 ///   - Raphire/Win11Debloat (Config/Apps.json, default-on entries)
 ///   - Sycnex/Windows10Debloater ($Bloatware array)
 ///   - ChrisTitusTech/winutil (config/tweaks.json WPFTweaksDeBloat.appx)
+///
 /// Every entry below is on at least 2 of the 3 lists.
 ///
 /// Deliberately NOT in this list (would break things):
@@ -47,11 +48,11 @@ const DEBLOAT_PREFIXES: &[&str] = &[
     "Microsoft.WindowsMaps",
     "Microsoft.WindowsSoundRecorder",
     // Mail/Calendar/People/Messaging/Skype
-    "Microsoft.WindowsCommunicationsApps",  // Mail + Calendar
+    "Microsoft.WindowsCommunicationsApps", // Mail + Calendar
     "Microsoft.People",
     "Microsoft.Messaging",
     "Microsoft.SkypeApp",
-    "Microsoft.YourPhone",                  // Phone Link
+    "Microsoft.YourPhone", // Phone Link
     // Solitaire / 3D / Mixed Reality
     "Microsoft.MicrosoftSolitaireCollection",
     "Microsoft.Microsoft3DViewer",
@@ -63,8 +64,8 @@ const DEBLOAT_PREFIXES: &[&str] = &[
     "Microsoft.Xbox",
     "Microsoft.GamingApp",
     // Media
-    "Microsoft.ZuneMusic",                  // Groove Music / Media Player
-    "Microsoft.ZuneVideo",                  // Movies & TV
+    "Microsoft.ZuneMusic", // Groove Music / Media Player
+    "Microsoft.ZuneVideo", // Movies & TV
     "Clipchamp.Clipchamp",
     // Automate / DevHome (auto-installed, build VM has mise instead)
     "Microsoft.PowerAutomateDesktop",
@@ -79,20 +80,25 @@ const DEBLOAT_PREFIXES: &[&str] = &[
 pub fn run(name: &str, dry_run: bool) -> anyhow::Result<()> {
     let profile = profiles::get(name)?;
     if profile.os != profiles::GuestOs::Windows {
-        anyhow::bail!(
-            "vm debloat is Windows-only. Linux build VMs ship without Store-app bloat."
-        );
+        anyhow::bail!("vm debloat is Windows-only. Linux build VMs ship without Store-app bloat.");
     }
     ssh::check(profile)?;
     let session = ssh::connect(profile)?;
 
-    let mode = if dry_run { "dry-run (no changes)" } else { "removing" };
+    let mode = if dry_run {
+        "dry-run (no changes)"
+    } else {
+        "removing"
+    };
     println!("→ vm debloat on {name} — {mode}");
 
-    let script  = windows_debloat_script(dry_run);
-    let utf16:  Vec<u8> = script.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+    let script = windows_debloat_script(dry_run);
+    let utf16: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|c| c.to_le_bytes())
+        .collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16);
-    let cmd     = format!("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}");
+    let cmd = format!("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}");
 
     let (out, code) = ssh::exec_with_exit(&session, &cmd)?;
     println!("{out}");
@@ -110,7 +116,9 @@ fn windows_debloat_script(dry_run: bool) -> String {
         .collect::<Vec<_>>()
         .join(",");
 
-    let action = if dry_run { "" } else {
+    let action = if dry_run {
+        ""
+    } else {
         r#"
 foreach ($p in $found) {
   Write-Host ('  removing  {0}...' -f $p.Name) -NoNewline
@@ -129,7 +137,8 @@ foreach ($p in $found) {
     Write-Host (' FAILED: {0}' -f $_.Exception.Message)
   }
 }
-"# };
+"#
+    };
 
     format!(
         r#"$ErrorActionPreference = 'SilentlyContinue'

@@ -5,27 +5,30 @@
 /// Tauri vs plain detection: presence of `src-tauri/` directory (the standard
 /// Tauri layout). Plain Rust projects (no `src-tauri/`) build a single binary
 /// per triple, named after `[package].name` in Cargo.toml.
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use crate::cli::BuildTarget;
 use super::profiles::{GuestOs, VmProfile};
 use super::ssh;
+use crate::cli::BuildTarget;
 
 /// Project layout detection — drives whether we run `cargo tauri build`
 /// (with bundle outputs) or plain `cargo build --release` (with a single
 /// binary output).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ProjectKind {
-    Tauri,  // has src-tauri/ — produces .msi/.exe/.deb/.AppImage bundles
-    Cargo,  // plain Rust — produces a single binary at target/<triple>/release/<name>
+    Tauri, // has src-tauri/ — produces .msi/.exe/.deb/.AppImage bundles
+    Cargo, // plain Rust — produces a single binary at target/<triple>/release/<name>
 }
 
 pub fn detect_project_kind(project_dir: &Path) -> ProjectKind {
     if project_dir.join("src-tauri").is_dir()
-        || project_dir.join("src-tauri").join("tauri.conf.json").is_file()
+        || project_dir
+            .join("src-tauri")
+            .join("tauri.conf.json")
+            .is_file()
     {
         ProjectKind::Tauri
     } else {
@@ -38,17 +41,28 @@ pub fn detect_project_kind(project_dir: &Path) -> ProjectKind {
 /// crate dep) — same shape as preflight_mise_toml.
 pub fn cargo_package_name(project_dir: &Path) -> Result<String> {
     let path = project_dir.join("Cargo.toml");
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
 
     let mut in_package = false;
     for raw in content.lines() {
         let line = raw.trim();
-        if line.starts_with("[package]") { in_package = true; continue; }
-        if line.starts_with("[") { in_package = false; continue; }
-        if !in_package { continue; }
+        if line.starts_with("[package]") {
+            in_package = true;
+            continue;
+        }
+        if line.starts_with("[") {
+            in_package = false;
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
         // Match: name = "foo" / name="foo" / name = 'foo'
-        if let Some(rest) = line.strip_prefix("name").and_then(|s| s.trim_start().strip_prefix("=")) {
+        if let Some(rest) = line
+            .strip_prefix("name")
+            .and_then(|s| s.trim_start().strip_prefix("="))
+        {
             let val = rest.trim().trim_matches(|c| c == '"' || c == '\'');
             if !val.is_empty() {
                 return Ok(val.to_string());
@@ -61,9 +75,13 @@ pub fn cargo_package_name(project_dir: &Path) -> Result<String> {
 /// Format an elapsed duration as `Hh Mm Ss` or `Mm Ss` or `Ss`.
 fn fmt_elapsed(d: std::time::Duration) -> String {
     let s = d.as_secs();
-    if s >= 3600 { format!("{}h {}m {}s", s / 3600, (s % 3600) / 60, s % 60) }
-    else if s >= 60 { format!("{}m {}s", s / 60, s % 60) }
-    else { format!("{}s", s) }
+    if s >= 3600 {
+        format!("{}h {}m {}s", s / 3600, (s % 3600) / 60, s % 60)
+    } else if s >= 60 {
+        format!("{}m {}s", s / 60, s % 60)
+    } else {
+        format!("{}s", s)
+    }
 }
 
 /// Rust target triples for each (BuildTarget × GuestOs) combination.
@@ -78,11 +96,11 @@ fn fmt_elapsed(d: std::time::Duration) -> String {
 /// + gcc-x86-64-linux-gnu) which we don't yet provision.
 fn triples(target: BuildTarget, os: GuestOs) -> Vec<&'static str> {
     match (target, os) {
-        (BuildTarget::X8664,  GuestOs::Windows) => vec!["x86_64-pc-windows-msvc"],
+        (BuildTarget::X8664, GuestOs::Windows) => vec!["x86_64-pc-windows-msvc"],
         // Should never reach: vm_build bails for Windows arm64/both, Linux x86_64/both
-        (_,                   GuestOs::Windows) => vec!["x86_64-pc-windows-msvc"],
-        (BuildTarget::Arm64,  GuestOs::Linux)   => vec!["aarch64-unknown-linux-gnu"],
-        (_,                   GuestOs::Linux)   => vec!["aarch64-unknown-linux-gnu"],
+        (_, GuestOs::Windows) => vec!["x86_64-pc-windows-msvc"],
+        (BuildTarget::Arm64, GuestOs::Linux) => vec!["aarch64-unknown-linux-gnu"],
+        (_, GuestOs::Linux) => vec!["aarch64-unknown-linux-gnu"],
     }
 }
 
@@ -93,7 +111,10 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     // requirements (tauri-cli only needed for Tauri), and the artifact
     // location (bundle/ vs release/<name>).
     let kind = detect_project_kind(project_dir);
-    let kind_label = match kind { ProjectKind::Tauri => "Tauri", ProjectKind::Cargo => "cargo" };
+    let kind_label = match kind {
+        ProjectKind::Tauri => "Tauri",
+        ProjectKind::Cargo => "cargo",
+    };
     println!("→ Project kind: {kind_label}");
 
     // Pre-flight: verify the project's mise.toml declares the toolchain we need.
@@ -109,15 +130,18 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
 
     let sep = match profile.os {
         GuestOs::Windows => '\\',
-        GuestOs::Linux   => '/',
+        GuestOs::Linux => '/',
     };
     let vm_home = match profile.os {
         GuestOs::Windows => format!("C:\\Users\\{}", profile.user),
-        GuestOs::Linux   => format!("/home/{}", profile.user),
+        GuestOs::Linux => format!("/home/{}", profile.user),
     };
     let vm_project_dir = format!("{vm_home}{sep}{project_name}");
 
-    let platform      = match profile.os { GuestOs::Windows => "windows", GuestOs::Linux => "linux" };
+    let platform = match profile.os {
+        GuestOs::Windows => "windows",
+        GuestOs::Linux => "linux",
+    };
     let artifacts_dir = project_dir.join(".build").join(platform);
 
     // ── Connect ───────────────────────────────────────────────────────────────
@@ -168,7 +192,7 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     // Windows (libssh2 doesn't translate `C:/...` to a Windows path that
     // OpenSSH-SCP accepts — relative lands in the user's home directory).
     let remote_tar = match profile.os {
-        GuestOs::Linux   => format!("/home/{}/sync.tar.gz", profile.user),
+        GuestOs::Linux => format!("/home/{}/sync.tar.gz", profile.user),
         GuestOs::Windows => "sync.tar.gz".to_string(),
     };
     ssh::upload(profile, &tmp_tar, &remote_tar)?;
@@ -183,7 +207,9 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
                 r#"mkdir -p "{vm_project_dir}" && cd "{vm_project_dir}" && tar -xzf ~/sync.tar.gz && rm ~/sync.tar.gz"#
             ),
         )?;
-        if code != 0 { bail!("untar failed on VM:\n{out}"); }
+        if code != 0 {
+            bail!("untar failed on VM:\n{out}");
+        }
     } else {
         // cmd.exe gotcha: `if not exist X CMD1 && CMD2` parses as
         // `if not exist X (CMD1 && CMD2)` — so on a re-run where X already
@@ -195,13 +221,19 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
                 r#"mkdir "{vm_project_dir}" 2>nul & cd /d "{vm_project_dir}" && tar -xzf "%USERPROFILE%\sync.tar.gz" && del "%USERPROFILE%\sync.tar.gz""#
             ),
         )?;
-        if code != 0 { bail!("untar failed on VM:\n{out}"); }
+        if code != 0 {
+            bail!("untar failed on VM:\n{out}");
+        }
     }
     println!("✓ Code synced  ⌚ sync: {}", fmt_elapsed(t_sync.elapsed()));
 
     // ── Install tools ─────────────────────────────────────────────────────────
 
-    let mise  = if profile.os == GuestOs::Linux { "~/.local/bin/mise" } else { "mise" };
+    let mise = if profile.os == GuestOs::Linux {
+        "~/.local/bin/mise"
+    } else {
+        "mise"
+    };
 
     // Persistent log on the VM. `vm logs --name X` tails this.
     // - Linux: bash `exec > >(tee -a)` redirects stdout/stderr while the
@@ -221,14 +253,15 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     // happens if we kill the host-side build process during mid-cmd.exe
     // file ops; `vm restart` clears it.)
     let log_path_h = match profile.os {
-        GuestOs::Linux   => "~/.utm-dev-build/build.log",
+        GuestOs::Linux => "~/.utm-dev-build/build.log",
         GuestOs::Windows => r"%USERPROFILE%\.utm-dev-build\build.log",
     };
     let mkdir_log = match profile.os {
         GuestOs::Linux => "mkdir -p ~/.utm-dev-build && \
                            [ -f ~/.utm-dev-build/build.log ] && \
                            mv -f ~/.utm-dev-build/build.log ~/.utm-dev-build/build.log.old \
-                             2>/dev/null || true".to_string(),
+                             2>/dev/null || true"
+            .to_string(),
         GuestOs::Windows => {
             // No timestamp/random — too many cmd↔PS escaping landmines. A
             // single .old slot is enough; each run overwrites the prior .old.
@@ -291,12 +324,14 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         // sccache install is best-effort — not blocking the build chain.
         // Plain `||` with no echo arg avoids cmd.exe's grouping confusion
         // around `(...)` in echo args.
-        let install_sccache = format!("{mise} use --global \"cargo:sccache@latest\" 2>nul || ver >nul");
+        let install_sccache =
+            format!("{mise} use --global \"cargo:sccache@latest\" 2>nul || ver >nul");
         format!(
             r#"{mkdir_log} & cd /d "{vm_project_dir}" && set MISE_CARGO_BINSTALL=true && set CARGO_INCREMENTAL=0 && ({win_msvc_x64} && {mise} trust --yes && {mise} install rust && {switch_rustup} && {install_sccache} && {mise} install) >> "{log_path_h}" 2>&1"#
         )
     } else {
-        let install_sccache = format!("{mise} use --global \"cargo:sccache@latest\" 2>/dev/null || true");
+        let install_sccache =
+            format!("{mise} use --global \"cargo:sccache@latest\" 2>/dev/null || true");
         format!(
             r#"{mkdir_log} && {linux_tee}cd "{vm_project_dir}" && export MISE_CARGO_BINSTALL=true CARGO_INCREMENTAL=0 && {mise} trust --yes && {install_sccache} && {mise} install"#
         )
@@ -309,12 +344,14 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
             profile.name
         );
     }
-    println!("✓ Tools installed  ⌚ mise install: {}", fmt_elapsed(t_install.elapsed()));
+    println!(
+        "✓ Tools installed  ⌚ mise install: {}",
+        fmt_elapsed(t_install.elapsed())
+    );
 
     // Linux x86_64 cross-compile prep: ensure multiarch + amd64 system libs.
     // No-op on Windows or when only building native ARM64 on Linux.
-    if profile.os == GuestOs::Linux
-        && (target == BuildTarget::X8664 || target == BuildTarget::Both)
+    if profile.os == GuestOs::Linux && (target == BuildTarget::X8664 || target == BuildTarget::Both)
     {
         ensure_linux_multiarch(profile, &session)?;
     }
@@ -358,8 +395,14 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     // ── Build per target ──────────────────────────────────────────────────────
 
     let triples = triples(target, profile.os);
-    let platform_label = match profile.os { GuestOs::Windows => "Windows", GuestOs::Linux => "Linux" };
-    let kind_word = match kind { ProjectKind::Tauri => "Tauri ", ProjectKind::Cargo => "" };
+    let platform_label = match profile.os {
+        GuestOs::Windows => "Windows",
+        GuestOs::Linux => "Linux",
+    };
+    let kind_word = match kind {
+        ProjectKind::Tauri => "Tauri ",
+        ProjectKind::Cargo => "",
+    };
     println!(
         "→ Building {kind_word}{platform_label} app for: {} (first build per arch may take 10–30 min — tail with: vm logs --name {} --follow)",
         triples.join(", "),
@@ -423,7 +466,10 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
                 profile.name
             );
         }
-        println!("✓ Build complete: {triple}  ⌚ {cargo_subcmd}: {}", fmt_elapsed(t_build.elapsed()));
+        println!(
+            "✓ Build complete: {triple}  ⌚ {cargo_subcmd}: {}",
+            fmt_elapsed(t_build.elapsed())
+        );
 
         // 3. Pull this triple's artifacts into .build/{platform}/{arch}/
         let t_pull = Instant::now();
@@ -440,7 +486,7 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
 
                 // Show summary of what landed
                 let exts: &[&str] = match profile.os {
-                    GuestOs::Linux   => &["deb", "AppImage", "rpm"],
+                    GuestOs::Linux => &["deb", "AppImage", "rpm"],
                     GuestOs::Windows => &["msi", "exe"],
                 };
                 for path in walk_files(&arch_dir)? {
@@ -454,9 +500,11 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
             ProjectKind::Cargo => {
                 // Plain cargo produces a single binary at
                 // target/<triple>/release/<name>[.exe]
-                let bin_name = cargo_bin_name.as_ref().expect("cargo_bin_name set for ProjectKind::Cargo");
+                let bin_name = cargo_bin_name
+                    .as_ref()
+                    .expect("cargo_bin_name set for ProjectKind::Cargo");
                 let bin_filename = match profile.os {
-                    GuestOs::Linux   => bin_name.clone(),
+                    GuestOs::Linux => bin_name.clone(),
                     GuestOs::Windows => format!("{bin_name}.exe"),
                 };
                 let bin_path = format!("{target_root}{sep}{triple}{sep}release{sep}{bin_filename}");
@@ -473,17 +521,25 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
                 let local_bin = arch_dir.join(&bin_filename);
                 ssh::download(profile, &scp_path, &local_bin)?;
                 let size = std::fs::metadata(&local_bin)?.len();
-                println!("  {} ({:.1} MB)", local_bin.display(), size as f64 / 1_048_576.0);
+                println!(
+                    "  {} ({:.1} MB)",
+                    local_bin.display(),
+                    size as f64 / 1_048_576.0
+                );
             }
         }
 
-        println!("  ⌚ pull+extract: {} | target total: {}",
+        println!(
+            "  ⌚ pull+extract: {} | target total: {}",
             fmt_elapsed(t_pull.elapsed()),
             fmt_elapsed(t_target.elapsed()),
         );
     }
 
-    println!("\n══ Done. Total: {} ══", fmt_elapsed(total_start.elapsed()));
+    println!(
+        "\n══ Done. Total: {} ══",
+        fmt_elapsed(total_start.elapsed())
+    );
     Ok(())
 }
 
@@ -511,10 +567,12 @@ fn pull_dir(
             &format!(r#"cd /d "{remote_dir}" && tar -czf "%USERPROFILE%\artifacts.tar.gz" ."#),
         )?
     };
-    if code != 0 { bail!("Failed to archive artifacts on VM ({triple}):\n{out}"); }
+    if code != 0 {
+        bail!("Failed to archive artifacts on VM ({triple}):\n{out}");
+    }
 
     let remote_artifacts = match profile.os {
-        GuestOs::Linux   => format!("/home/{}/artifacts.tar.gz", profile.user),
+        GuestOs::Linux => format!("/home/{}/artifacts.tar.gz", profile.user),
         GuestOs::Windows => "artifacts.tar.gz".to_string(),
     };
     let local_tar = local_dir.join("artifacts.tar.gz");
@@ -535,18 +593,20 @@ fn pull_dir(
         ])
         .status()
         .context("extracting artifacts")?;
-    if !status.success() { bail!("Failed to extract artifacts locally for {triple}"); }
+    if !status.success() {
+        bail!("Failed to extract artifacts locally for {triple}");
+    }
     let _ = std::fs::remove_file(&local_tar);
     Ok(())
 }
 
 fn arch_label_for(triple: &str) -> &'static str {
     match triple {
-        "aarch64-pc-windows-msvc"     => "arm64",
-        "x86_64-pc-windows-msvc"      => "x86_64",
-        "aarch64-unknown-linux-gnu"   => "arm64",
-        "x86_64-unknown-linux-gnu"    => "x86_64",
-        _                              => "unknown",
+        "aarch64-pc-windows-msvc" => "arm64",
+        "x86_64-pc-windows-msvc" => "x86_64",
+        "aarch64-unknown-linux-gnu" => "arm64",
+        "x86_64-unknown-linux-gnu" => "x86_64",
+        _ => "unknown",
     }
 }
 
@@ -564,8 +624,8 @@ fn preflight_mise_toml(project_dir: &Path, kind: ProjectKind) -> Result<()> {
             project_dir.display()
         );
     }
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
 
     let has_rust = content.lines().any(|l| {
         let t = l.trim_start();
@@ -573,7 +633,9 @@ fn preflight_mise_toml(project_dir: &Path, kind: ProjectKind) -> Result<()> {
     });
 
     let mut missing: Vec<&str> = Vec::new();
-    if !has_rust { missing.push("rust"); }
+    if !has_rust {
+        missing.push("rust");
+    }
     if kind == ProjectKind::Tauri && !content.contains("tauri-cli") {
         missing.push("\"cargo:tauri-cli\"");
     }
@@ -601,7 +663,7 @@ fn preflight_mise_toml(project_dir: &Path, kind: ProjectKind) -> Result<()> {
 /// reached we just skip and let the bail message do the work.
 fn dump_build_log_errors(profile: &VmProfile) {
     let log_path = match profile.os {
-        GuestOs::Linux   => "~/.utm-dev-build/build.log",
+        GuestOs::Linux => "~/.utm-dev-build/build.log",
         GuestOs::Windows => r"%USERPROFILE%\.utm-dev-build\build.log",
     };
     let cmd = match profile.os {
@@ -617,7 +679,10 @@ fn dump_build_log_errors(profile: &VmProfile) {
               }} else {{ '(no build log)' }}""#
         ),
     };
-    eprintln!("\n── Last error stanzas (from {} build log) ──", profile.name);
+    eprintln!(
+        "\n── Last error stanzas (from {} build log) ──",
+        profile.name
+    );
     let _ = ssh::exec_streaming(profile, &cmd);
     eprintln!("─────────────────────────────────────────────────");
 }
@@ -632,7 +697,8 @@ fn linux_cross_env_for(triple: &str) -> String {
             "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
              PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
              PKG_CONFIG_ALLOW_CROSS=1 \
-             PKG_CONFIG_SYSROOT_DIR=/ ".to_string()
+             PKG_CONFIG_SYSROOT_DIR=/ "
+                .to_string()
         }
         _ => String::new(),
     }
@@ -683,7 +749,7 @@ fn walk_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
-        let path  = entry.path();
+        let path = entry.path();
         if path.is_dir() {
             out.extend(walk_files(&path)?);
         } else {

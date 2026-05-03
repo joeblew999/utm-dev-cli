@@ -7,8 +7,9 @@ use crate::vm::{profiles, state, utm};
 
 pub fn run(name: &str) -> anyhow::Result<()> {
     let profile = profiles::get(name)?;
-    let st = state::load(name)
-        .map_err(|_| anyhow::anyhow!("'{}' not imported — run: utm-dev vm up --name {name}", name))?;
+    let st = state::load(name).map_err(|_| {
+        anyhow::anyhow!("'{}' not imported — run: utm-dev vm up --name {name}", name)
+    })?;
 
     // Stop VM if running
     let running = utm::list_vms()
@@ -22,12 +23,15 @@ pub fn run(name: &str) -> anyhow::Result<()> {
     }
 
     // Locate the .utm bundle UTM stores on disk
-    let home   = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("no home dir"))?;
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("no home dir"))?;
     let bundle = home
         .join("Library/Containers/com.utmapp.UTM/Data/Documents")
         .join(format!("{}.utm", st.display_name));
     if !bundle.exists() {
-        anyhow::bail!("VM bundle not found at {} — has UTM moved it?", bundle.display());
+        anyhow::bail!(
+            "VM bundle not found at {} — has UTM moved it?",
+            bundle.display()
+        );
     }
 
     let bundle_gb = dir_size_bytes(&bundle)? as f64 / 1_073_741_824.0;
@@ -35,7 +39,7 @@ pub fn run(name: &str) -> anyhow::Result<()> {
 
     // Output to <project>/.build/boxes/
     let project_dir = std::env::current_dir()?;
-    let box_dir     = project_dir.join(".build").join("boxes");
+    let box_dir = project_dir.join(".build").join("boxes");
     std::fs::create_dir_all(&box_dir)?;
     let box_file = box_dir.join(format!("{}-{name}_arm64.box", profile.box_name));
 
@@ -43,10 +47,7 @@ pub fn run(name: &str) -> anyhow::Result<()> {
     let tmp_dir = std::env::temp_dir().join(format!("utm-dev-pkg-{}", std::process::id()));
     std::fs::create_dir_all(&tmp_dir)?;
 
-    std::fs::write(
-        tmp_dir.join("metadata.json"),
-        r#"{"provider":"utm"}"#,
-    )?;
+    std::fs::write(tmp_dir.join("metadata.json"), r#"{"provider":"utm"}"#)?;
 
     // cp -a bundle → tmp_dir/box.utm
     let dst = tmp_dir.join("box.utm");
@@ -91,7 +92,12 @@ fn dir_size_bytes(path: &std::path::Path) -> anyhow::Result<u64> {
     let output = std::process::Command::new("du")
         .args(["-sk", path.to_str().unwrap()])
         .output()?;
-    let line  = String::from_utf8_lossy(&output.stdout);
-    let kb: u64 = line.split_whitespace().next().unwrap_or("0").parse().unwrap_or(0);
+    let line = String::from_utf8_lossy(&output.stdout);
+    let kb: u64 = line
+        .split_whitespace()
+        .next()
+        .unwrap_or("0")
+        .parse()
+        .unwrap_or(0);
     Ok(kb * 1024)
 }

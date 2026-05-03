@@ -30,7 +30,9 @@ pub struct Session {
 /// `Session` if the host reaches the VM and auth succeeds. No persistent
 /// connection is held — the Session is just a typed bag of profile info.
 pub fn connect(profile: &VmProfile) -> Result<Session> {
-    let sess = Session { profile: profile.clone() };
+    let sess = Session {
+        profile: profile.clone(),
+    };
     let (out, code) = exec_with_exit(&sess, "echo ok")?;
     if code != 0 || !out.contains("ok") {
         anyhow::bail!(
@@ -64,15 +66,20 @@ pub fn exec(session: &Session, cmd: &str) -> Result<String> {
 /// with U+FFFD; strict from_utf8 would bail and the caller sees nothing.
 pub fn exec_with_exit(session: &Session, cmd: &str) -> Result<(String, i32)> {
     let p = &session.profile;
-    let target   = format!("{}@localhost", p.user);
+    let target = format!("{}@localhost", p.user);
     let port_str = p.ssh_port.to_string();
     let output = Command::new("ssh")
         .args([
-            "-p", &port_str,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
-            "-o", "BatchMode=yes",
+            "-p",
+            &port_str,
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "BatchMode=yes",
         ])
         .arg(&target)
         .arg(cmd)
@@ -108,11 +115,16 @@ pub fn exec_streaming(profile: &VmProfile, cmd: &str) -> Result<i32> {
     // the cmd-level for visibility instead).
     let port_str = profile.ssh_port.to_string();
     let mut args: Vec<&str> = vec![
-        "-p", &port_str,
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-        "-o", "BatchMode=yes",
+        "-p",
+        &port_str,
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
+        "-o",
+        "BatchMode=yes",
     ];
     if profile.os == GuestOs::Linux {
         args.insert(0, "-tt");
@@ -147,12 +159,18 @@ pub fn download(profile: &VmProfile, remote_path: &str, local: &std::path::Path)
 fn scp(profile: &VmProfile, src: &str, dst: &str) -> Result<()> {
     let status = Command::new("scp")
         .args([
-            "-P", &profile.ssh_port.to_string(),
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
-            "-o", "BatchMode=yes",
-            src, dst,
+            "-P",
+            &profile.ssh_port.to_string(),
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "BatchMode=yes",
+            src,
+            dst,
         ])
         .status()
         .context("spawning scp")?;

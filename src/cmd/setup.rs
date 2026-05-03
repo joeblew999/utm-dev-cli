@@ -5,18 +5,18 @@
 /// Linux: apt-installed system C libraries Tauri links against, then `mise install`.
 ///
 /// Idempotent — checks before each step.
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-const JAVA_VERSION:        &str = "temurin-17.0.18+8";
-const NDK_VERSION:         &str = "27.2.12479018";
+const JAVA_VERSION: &str = "temurin-17.0.18+8";
+const NDK_VERSION: &str = "27.2.12479018";
 const BUILD_TOOLS_VERSION: &str = "35.0.0";
-const PLATFORM_VERSION:    &str = "android-35";
-const CMDLINE_TOOLS_URL:   &str =
+const PLATFORM_VERSION: &str = "android-35";
+const CMDLINE_TOOLS_URL: &str =
     "https://dl.google.com/android/repository/commandlinetools-mac-14742923_latest.zip";
-const AVD_NAME:            &str = "utm-dev";
+const AVD_NAME: &str = "utm-dev";
 
 pub fn run() -> Result<()> {
     println!("═══ utm-dev setup ═══");
@@ -45,13 +45,9 @@ fn setup_linux() -> Result<()> {
     println!("── Stage 1: System C libraries (apt) ──");
     println!("  (Rust, bun, cargo-tauri are managed by mise [tools])\n");
 
-    let webkit_installed = run_capture(
-        "dpkg",
-        &["-s", "libwebkit2gtk-4.1-dev"],
-        None,
-    )
-    .map(|out| out.status.success())
-    .unwrap_or(false);
+    let webkit_installed = run_capture("dpkg", &["-s", "libwebkit2gtk-4.1-dev"], None)
+        .map(|out| out.status.success())
+        .unwrap_or(false);
 
     if webkit_installed {
         println!("  ✓ Tauri system deps already installed");
@@ -59,15 +55,29 @@ fn setup_linux() -> Result<()> {
         println!("  Installing system dependencies (requires sudo)...");
         let env = vec![("DEBIAN_FRONTEND", "noninteractive")];
         sudo_apt(&env, &["update", "-qq"])?;
-        sudo_apt(&env, &[
-            "install", "-y", "-qq",
-            "build-essential", "curl", "git", "pkg-config",
-            "libwebkit2gtk-4.1-dev", "libgtk-3-dev",
-            "libjavascriptcoregtk-4.1-dev", "libsoup-3.0-dev",
-            "libayatana-appindicator3-dev", "librsvg2-dev",
-            "libssl-dev", "libxdo-dev",
-            "patchelf", "wget", "file",
-        ])?;
+        sudo_apt(
+            &env,
+            &[
+                "install",
+                "-y",
+                "-qq",
+                "build-essential",
+                "curl",
+                "git",
+                "pkg-config",
+                "libwebkit2gtk-4.1-dev",
+                "libgtk-3-dev",
+                "libjavascriptcoregtk-4.1-dev",
+                "libsoup-3.0-dev",
+                "libayatana-appindicator3-dev",
+                "librsvg2-dev",
+                "libssl-dev",
+                "libxdo-dev",
+                "patchelf",
+                "wget",
+                "file",
+            ],
+        )?;
         println!("  ✓ System deps installed");
     }
 
@@ -150,7 +160,9 @@ fn setup_macos() -> Result<()> {
     // Java via mise
     let where_java = run_capture("mise", &["where", "java"], None)?;
     let java_home = if where_java.status.success() {
-        let path = String::from_utf8_lossy(&where_java.stdout).trim().to_string();
+        let path = String::from_utf8_lossy(&where_java.stdout)
+            .trim()
+            .to_string();
         println!("  ✓ Java ({})", path);
         path
     } else {
@@ -192,20 +204,32 @@ fn setup_macos() -> Result<()> {
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .status();
 
-    install_sdk_pkg(&sdkmanager, &android_home, &env,
+    install_sdk_pkg(
+        &sdkmanager,
+        &android_home,
+        &env,
         format!("platforms;{PLATFORM_VERSION}"),
         format!("{android_home}/platforms/{PLATFORM_VERSION}"),
-        &format!("Android platform {PLATFORM_VERSION}"))?;
+        &format!("Android platform {PLATFORM_VERSION}"),
+    )?;
 
-    install_sdk_pkg(&sdkmanager, &android_home, &env,
+    install_sdk_pkg(
+        &sdkmanager,
+        &android_home,
+        &env,
         format!("build-tools;{BUILD_TOOLS_VERSION}"),
         format!("{android_home}/build-tools/{BUILD_TOOLS_VERSION}"),
-        &format!("Android build-tools {BUILD_TOOLS_VERSION}"))?;
+        &format!("Android build-tools {BUILD_TOOLS_VERSION}"),
+    )?;
 
-    install_sdk_pkg(&sdkmanager, &android_home, &env,
+    install_sdk_pkg(
+        &sdkmanager,
+        &android_home,
+        &env,
         "platform-tools".into(),
         format!("{android_home}/platform-tools"),
-        "Android platform-tools (adb)")?;
+        "Android platform-tools (adb)",
+    )?;
 
     let ndk_marker = format!("{android_home}/ndk/{NDK_VERSION}/source.properties");
     if Path::new(&ndk_marker).exists() {
@@ -213,17 +237,27 @@ fn setup_macos() -> Result<()> {
     } else {
         let _ = std::fs::remove_dir_all(format!("{android_home}/ndk/{NDK_VERSION}"));
         println!("  Installing Android NDK {}...", NDK_VERSION);
-        run_sdkmanager(&sdkmanager, &android_home, &env, &format!("ndk;{NDK_VERSION}"))?;
+        run_sdkmanager(
+            &sdkmanager,
+            &android_home,
+            &env,
+            &format!("ndk;{NDK_VERSION}"),
+        )?;
         println!("  ✓ Android NDK installed");
     }
 
-    install_sdk_pkg(&sdkmanager, &android_home, &env,
+    install_sdk_pkg(
+        &sdkmanager,
+        &android_home,
+        &env,
         "emulator".into(),
         format!("{android_home}/emulator/emulator"),
-        "Android emulator")?;
+        "Android emulator",
+    )?;
 
     let system_image = format!("system-images;{PLATFORM_VERSION};google_apis;arm64-v8a");
-    let image_dir = format!("{android_home}/system-images/{PLATFORM_VERSION}/google_apis/arm64-v8a");
+    let image_dir =
+        format!("{android_home}/system-images/{PLATFORM_VERSION}/google_apis/arm64-v8a");
     if Path::new(&image_dir).exists() {
         println!("  ✓ System image {}", system_image);
     } else {
@@ -233,17 +267,22 @@ fn setup_macos() -> Result<()> {
     }
 
     // AVD
-    let avd_list = capture_stdout(&avdmanager, &["list", "avd", "-c"], Some(&env)).unwrap_or_default();
+    let avd_list =
+        capture_stdout(&avdmanager, &["list", "avd", "-c"], Some(&env)).unwrap_or_default();
     if avd_list.lines().any(|l| l.trim() == AVD_NAME) {
         println!("  ✓ AVD \"{}\"", AVD_NAME);
     } else {
         println!("  Creating AVD \"{}\"...", AVD_NAME);
         let status = Command::new(&avdmanager)
             .args([
-                "create", "avd",
-                "-n", AVD_NAME,
-                "-k", &system_image,
-                "--device", "pixel_6",
+                "create",
+                "avd",
+                "-n",
+                AVD_NAME,
+                "-k",
+                &system_image,
+                "--device",
+                "pixel_6",
                 "--force",
             ])
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
@@ -256,8 +295,8 @@ fn setup_macos() -> Result<()> {
 
     // Stage 3: Rust Android targets
     println!("\n── Stage 3: Rust Android targets ──");
-    let installed = capture_stdout("rustup", &["target", "list", "--installed"], None)
-        .unwrap_or_default();
+    let installed =
+        capture_stdout("rustup", &["target", "list", "--installed"], None).unwrap_or_default();
     for target in &[
         "aarch64-linux-android",
         "armv7-linux-androideabi",
@@ -285,7 +324,9 @@ fn setup_macos() -> Result<()> {
         println!("  ✓ CocoaPods {}", ver);
     } else {
         println!("  Installing CocoaPods...");
-        let status = Command::new("gem").args(["install", "cocoapods"]).status()?;
+        let status = Command::new("gem")
+            .args(["install", "cocoapods"])
+            .status()?;
         if !status.success() {
             bail!("gem install cocoapods failed");
         }
@@ -318,18 +359,18 @@ fn sdk_env(android_home: &str, java_home: &str) -> Vec<(String, String)> {
         .unwrap_or(path_extra);
     vec![
         ("ANDROID_HOME".into(), android_home.into()),
-        ("JAVA_HOME".into(),    java_home.into()),
-        ("PATH".into(),         path),
+        ("JAVA_HOME".into(), java_home.into()),
+        ("PATH".into(), path),
     ]
 }
 
 fn install_sdk_pkg(
-    sdkmanager:   &str,
+    sdkmanager: &str,
     android_home: &str,
-    env:          &[(String, String)],
-    package:      String,
-    marker:       String,
-    label:        &str,
+    env: &[(String, String)],
+    package: String,
+    marker: String,
+    label: &str,
 ) -> Result<()> {
     if Path::new(&marker).exists() {
         println!("  ✓ {}", label);
@@ -342,10 +383,10 @@ fn install_sdk_pkg(
 }
 
 fn run_sdkmanager(
-    sdkmanager:   &str,
+    sdkmanager: &str,
     android_home: &str,
-    env:          &[(String, String)],
-    package:      &str,
+    env: &[(String, String)],
+    package: &str,
 ) -> Result<()> {
     let status = Command::new(sdkmanager)
         .arg(format!("--sdk_root={android_home}"))
@@ -360,10 +401,7 @@ fn run_sdkmanager(
 }
 
 fn install_cmdline_tools(android_home: &str) -> Result<()> {
-    let tmp_zip = std::env::temp_dir().join(format!(
-        "cmdline-tools-{}.zip",
-        std::process::id()
-    ));
+    let tmp_zip = std::env::temp_dir().join(format!("cmdline-tools-{}.zip", std::process::id()));
 
     let status = Command::new("curl")
         .args(["-sSfL", "-o"])
@@ -426,9 +464,9 @@ fn capture_stdout(cmd: &str, args: &[&str], env: Option<&[(String, String)]>) ->
 }
 
 fn run_capture(
-    cmd:  &str,
+    cmd: &str,
     args: &[&str],
-    env:  Option<&HashMap<String, String>>,
+    env: Option<&HashMap<String, String>>,
 ) -> Result<std::process::Output> {
     let mut c = Command::new(cmd);
     c.args(args);
@@ -445,4 +483,3 @@ fn sh(script: &str) -> Result<()> {
     }
     Ok(())
 }
-

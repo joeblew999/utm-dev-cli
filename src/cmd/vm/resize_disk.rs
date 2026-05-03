@@ -15,7 +15,10 @@ pub fn run(name: &str, plus_gb: u32) -> anyhow::Result<()> {
         .into_iter()
         .any(|e| e.name == st.display_name && e.status == "started");
     if running {
-        println!("→ Stopping {} (must be off to resize disk)...", st.display_name);
+        println!(
+            "→ Stopping {} (must be off to resize disk)...",
+            st.display_name
+        );
         utm::stop_vm(&st.display_name)?;
         std::thread::sleep(std::time::Duration::from_secs(8));
     }

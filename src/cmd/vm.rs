@@ -14,7 +14,10 @@ mod run;
 pub enum VmCommands {
     /// Start a VM (imports box + bootstraps on first run, then just starts)
     Up {
-        #[arg(long, help = "VM profile name (windows-build | linux-build | linux-dev | …)")]
+        #[arg(
+            long,
+            help = "VM profile name (windows-build | linux-build | linux-dev | …)"
+        )]
         name: String,
     },
     /// Stop a VM
@@ -90,7 +93,11 @@ pub enum VmCommands {
     Screenshot {
         #[arg(long, help = "VM profile name")]
         name: String,
-        #[arg(long, default_value = "screenshot.png", help = "Local path for the .png")]
+        #[arg(
+            long,
+            default_value = "screenshot.png",
+            help = "Local path for the .png"
+        )]
         out: String,
     },
     /// Run a command in a VM via SSH
@@ -133,7 +140,7 @@ pub enum VmCommands {
         #[arg(long, help = "Local path on host")]
         from: String,
         #[arg(long, help = "Destination path on VM")]
-        to:   String,
+        to: String,
     },
     /// Copy file or directory from VM to host (scp -r)
     Pull {
@@ -142,11 +149,14 @@ pub enum VmCommands {
         #[arg(long, help = "Source path on VM")]
         from: String,
         #[arg(long, help = "Local destination path on host")]
-        to:   String,
+        to: String,
     },
     /// Wire an existing UTM VM to a profile (skips download/import)
     Adopt {
-        #[arg(long, help = "Profile name to assign (windows-build | linux-build | …)")]
+        #[arg(
+            long,
+            help = "Profile name to assign (windows-build | linux-build | …)"
+        )]
         name: String,
         #[arg(long, help = "Exact display name of the VM in UTM (from utmctl list)")]
         utm_name: String,
@@ -175,24 +185,42 @@ pub enum VmCommands {
 
 pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
     match cmd {
-        VmCommands::Up { name }             => vm_up(&name),
-        VmCommands::Down { name }           => vm_down(&name),
-        VmCommands::Restart { name }        => { vm_down(&name)?; vm_up(&name) }
-        VmCommands::Clean { name, deep, aggressive, dry_run } => clean::run(&name, deep, aggressive, dry_run),
+        VmCommands::Up { name } => vm_up(&name),
+        VmCommands::Down { name } => vm_down(&name),
+        VmCommands::Restart { name } => {
+            vm_down(&name)?;
+            vm_up(&name)
+        }
+        VmCommands::Clean {
+            name,
+            deep,
+            aggressive,
+            dry_run,
+        } => clean::run(&name, deep, aggressive, dry_run),
         VmCommands::Debloat { name, dry_run } => debloat::run(&name, dry_run),
-        VmCommands::Exec { name, cmd }      => vm_exec(&name, &cmd.join(" ")),
-        VmCommands::Shell { name }          => vm_shell(&name),
-        VmCommands::Logs { name, kind, follow, tail, errors } => vm_logs(&name, &kind, follow, tail, errors),
-        VmCommands::Doctor { name }         => doctor::run(&name),
+        VmCommands::Exec { name, cmd } => vm_exec(&name, &cmd.join(" ")),
+        VmCommands::Shell { name } => vm_shell(&name),
+        VmCommands::Logs {
+            name,
+            kind,
+            follow,
+            tail,
+            errors,
+        } => vm_logs(&name, &kind, follow, tail, errors),
+        VmCommands::Doctor { name } => doctor::run(&name),
         VmCommands::Push { name, from, to } => vm_push(&name, &from, &to),
         VmCommands::Pull { name, from, to } => vm_pull(&name, &from, &to),
         VmCommands::Adopt { name, utm_name } => vm_adopt(&name, &utm_name),
-        VmCommands::Ls                      => vm_ls(),
-        VmCommands::Build { name, target, release } => vm_build(&name, target, release),
-        VmCommands::Run { name, bin }       => run::run(&name, bin.as_deref()),
+        VmCommands::Ls => vm_ls(),
+        VmCommands::Build {
+            name,
+            target,
+            release,
+        } => vm_build(&name, target, release),
+        VmCommands::Run { name, bin } => run::run(&name, bin.as_deref()),
         VmCommands::Screenshot { name, out } => vm_screenshot(&name, &out),
-        VmCommands::Delete { name }         => vm_delete(&name),
-        VmCommands::Package { name }        => package::run(&name),
+        VmCommands::Delete { name } => vm_delete(&name),
+        VmCommands::Package { name } => package::run(&name),
         VmCommands::ResizeDisk { name, plus_gb } => resize_disk::run(&name, plus_gb),
     }
 }
@@ -230,12 +258,15 @@ fn vm_adopt(name: &str, utm_name: &str) -> anyhow::Result<()> {
     state::save(
         name,
         &state::VmState {
-            uuid:         entry.uuid.clone(),
+            uuid: entry.uuid.clone(),
             display_name: utm_name.to_string(),
         },
     )?;
 
-    println!("✓ Adopted: profile '{}' → UTM VM '{}' ({})", name, utm_name, entry.uuid);
+    println!(
+        "✓ Adopted: profile '{}' → UTM VM '{}' ({})",
+        name, utm_name, entry.uuid
+    );
     println!("  Run: utm-dev vm up --name {name}");
     Ok(())
 }
@@ -262,7 +293,7 @@ fn vm_up(name: &str) -> anyhow::Result<()> {
         state::save(
             name,
             &state::VmState {
-                uuid:         uuid.clone(),
+                uuid: uuid.clone(),
                 display_name: display.clone(),
             },
         )?;
@@ -336,10 +367,12 @@ fn vm_logs(
     }
 
     let log_path = match (kind, &profile.os) {
-        ("build", profiles::GuestOs::Linux)   => "~/.utm-dev-build/build.log".to_string(),
-        ("build", profiles::GuestOs::Windows) => r"%USERPROFILE%\.utm-dev-build\build.log".to_string(),
-        ("run",   profiles::GuestOs::Linux)   => "~/.utm-dev-run/run.log".to_string(),
-        ("run",   profiles::GuestOs::Windows) => r"%USERPROFILE%\.utm-dev-run\run.log".to_string(),
+        ("build", profiles::GuestOs::Linux) => "~/.utm-dev-build/build.log".to_string(),
+        ("build", profiles::GuestOs::Windows) => {
+            r"%USERPROFILE%\.utm-dev-build\build.log".to_string()
+        }
+        ("run", profiles::GuestOs::Linux) => "~/.utm-dev-run/run.log".to_string(),
+        ("run", profiles::GuestOs::Windows) => r"%USERPROFILE%\.utm-dev-run\run.log".to_string(),
         _ => anyhow::bail!("unknown kind '{kind}' (expected: build | run)"),
     };
 
@@ -363,16 +396,20 @@ fn vm_logs(
         }
     } else {
         match (follow, tail, &profile.os) {
-            (true,  _,        profiles::GuestOs::Linux)   => format!("tail -F {log_path} 2>/dev/null"),
-            (false, Some(n),  profiles::GuestOs::Linux)   => format!("tail -n {n} {log_path} 2>/dev/null || echo '(no log yet)'"),
-            (false, None,     profiles::GuestOs::Linux)   => format!("cat {log_path} 2>/dev/null || echo '(no log yet)'"),
-            (true,  _,        profiles::GuestOs::Windows) => format!(
+            (true, _, profiles::GuestOs::Linux) => format!("tail -F {log_path} 2>/dev/null"),
+            (false, Some(n), profiles::GuestOs::Linux) => {
+                format!("tail -n {n} {log_path} 2>/dev/null || echo '(no log yet)'")
+            }
+            (false, None, profiles::GuestOs::Linux) => {
+                format!("cat {log_path} 2>/dev/null || echo '(no log yet)'")
+            }
+            (true, _, profiles::GuestOs::Windows) => format!(
                 r#"powershell -NoProfile -Command "Get-Content '{log_path}' -Wait -Tail 1000""#
             ),
-            (false, Some(n),  profiles::GuestOs::Windows) => format!(
+            (false, Some(n), profiles::GuestOs::Windows) => format!(
                 r#"powershell -NoProfile -Command "if (Test-Path '{log_path}') {{ Get-Content '{log_path}' -Tail {n} }} else {{ '(no log yet)' }}""#
             ),
-            (false, None,     profiles::GuestOs::Windows) => format!(
+            (false, None, profiles::GuestOs::Windows) => format!(
                 r#"powershell -NoProfile -Command "if (Test-Path '{log_path}') {{ Get-Content '{log_path}' }} else {{ '(no log yet)' }}""#
             ),
         }
@@ -385,16 +422,22 @@ fn vm_logs(
     Ok(())
 }
 
-
 fn vm_shell(name: &str) -> anyhow::Result<()> {
     let profile = profiles::get(name)?;
     ssh::check(profile)?;
     let target = format!("{}@localhost", profile.user);
     let status = std::process::Command::new("ssh")
-        .args(["-p", &profile.ssh_port.to_string(), "-t",
-               "-o", "StrictHostKeyChecking=no",
-               "-o", "UserKnownHostsFile=/dev/null",
-               "-o", "LogLevel=ERROR"])
+        .args([
+            "-p",
+            &profile.ssh_port.to_string(),
+            "-t",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+        ])
         .arg(&target)
         .status()
         .map_err(|e| anyhow::anyhow!("failed to spawn ssh: {e}"))?;
@@ -420,11 +463,19 @@ fn vm_pull(name: &str, from: &str, to: &str) -> anyhow::Result<()> {
 
 fn scp_run(profile: &profiles::VmProfile, src: &str, dst: &str) -> anyhow::Result<()> {
     let status = std::process::Command::new("scp")
-        .args(["-r", "-P", &profile.ssh_port.to_string(),
-               "-o", "StrictHostKeyChecking=no",
-               "-o", "UserKnownHostsFile=/dev/null",
-               "-o", "LogLevel=ERROR",
-               src, dst])
+        .args([
+            "-r",
+            "-P",
+            &profile.ssh_port.to_string(),
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            src,
+            dst,
+        ])
         .status()
         .map_err(|e| anyhow::anyhow!("failed to spawn scp: {e}"))?;
     if !status.success() {
@@ -440,7 +491,10 @@ fn vm_ls() -> anyhow::Result<()> {
     // Try to get live UTM status
     let live = utm::list_vms().unwrap_or_default();
 
-    println!("{:<18} {:<10} {:<8} {:<8} {:<12} {}", "NAME", "OS", "SSH", "RAM", "UTM STATUS", "UTM NAME");
+    println!(
+        "{:<18} {:<10} {:<8} {:<8} {:<12} UTM NAME",
+        "NAME", "OS", "SSH", "RAM", "UTM STATUS"
+    );
     println!("{}", "-".repeat(72));
     for p in profiles::list() {
         let utm_name = if state::exists(p.name) {
@@ -491,9 +545,7 @@ fn vm_screenshot(name: &str, out: &str) -> anyhow::Result<()> {
         &format!("DISPLAY=:99 scrot --overwrite {remote} 2>&1 && ls -la {remote}"),
     )?;
     if code != 0 {
-        anyhow::bail!(
-            "screenshot failed (is `vm run` running with Xvfb on :99?):\n{out_text}"
-        );
+        anyhow::bail!("screenshot failed (is `vm run` running with Xvfb on :99?):\n{out_text}");
     }
 
     let local = std::path::PathBuf::from(out);
@@ -581,4 +633,3 @@ fn vm_delete(name: &str) -> anyhow::Result<()> {
     println!("✓ Deleted '{}' ({})", st.display_name, name);
     Ok(())
 }
-

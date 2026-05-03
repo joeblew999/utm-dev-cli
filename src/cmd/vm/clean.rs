@@ -26,10 +26,10 @@ pub fn run(name: &str, deep: bool, aggressive: bool, dry_run: bool) -> anyhow::R
     }
 
     let mode = match (deep, aggressive, dry_run) {
-        (_, _, true)         => "dry-run (no changes)",
-        (_, true, false)     => "aggressive (one-shot Windows tweaks)",
+        (_, _, true) => "dry-run (no changes)",
+        (_, true, false) => "aggressive (one-shot Windows tweaks)",
         (true, false, false) => "deep (incl. cargo + mise caches)",
-        _                    => "default (keeps build caches)",
+        _ => "default (keeps build caches)",
     };
     println!("→ vm clean on {name} — {mode}");
 
@@ -43,10 +43,14 @@ pub fn run(name: &str, deep: bool, aggressive: bool, dry_run: bool) -> anyhow::R
             }
         }
         profiles::GuestOs::Windows => {
-            let script  = windows_clean_script(deep, dry_run);
-            let utf16:  Vec<u8> = script.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+            let script = windows_clean_script(deep, dry_run);
+            let utf16: Vec<u8> = script
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect();
             let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16);
-            let cmd     = format!("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}");
+            let cmd =
+                format!("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}");
             let (out, code) = ssh::exec_with_exit(&session, &cmd)?;
             println!("{out}");
             if code != 0 {
@@ -136,14 +140,17 @@ foreach ($log in (& wevtutil.exe el 2>$null)) {
         }
         print!("  {label}...");
         let _ = std::io::Write::flush(&mut std::io::stdout());
-        let utf16:  Vec<u8> = ps.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        let utf16: Vec<u8> = ps.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
         let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16);
-        let cmd     = format!("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}");
+        let cmd =
+            format!("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}");
         match ssh::exec_with_exit(session, &cmd) {
             Ok((out, _code)) => {
                 println!();
                 for line in out.lines() {
-                    if !line.trim().is_empty() { println!("{line}"); }
+                    if !line.trim().is_empty() {
+                        println!("{line}");
+                    }
                 }
             }
             Err(e) => println!(" SSH error: {e}"),
@@ -153,7 +160,10 @@ foreach ($log in (& wevtutil.exe el 2>$null)) {
     if !dry_run {
         let after = ps_c_free_gb(session).unwrap_or(0.0);
         println!();
-        println!("C: free: {before:.1} GB -> {after:.1} GB ({:+.1} GB)", after - before);
+        println!(
+            "C: free: {before:.1} GB -> {after:.1} GB ({:+.1} GB)",
+            after - before
+        );
     }
     Ok(())
 }
@@ -161,7 +171,9 @@ foreach ($log in (& wevtutil.exe el 2>$null)) {
 fn ps_c_free_gb(session: &ssh::Session) -> Option<f64> {
     let cmd = "powershell -NoProfile -Command \"(Get-PSDrive C).Free / 1GB\"";
     let (out, code) = ssh::exec_with_exit(session, cmd).ok()?;
-    if code != 0 { return None; }
+    if code != 0 {
+        return None;
+    }
     out.trim().parse::<f64>().ok()
 }
 
@@ -198,7 +210,9 @@ $targets = @(
     }
     blocks.push_str(")\n");
 
-    let action = if dry_run { "" } else {
+    let action = if dry_run {
+        ""
+    } else {
         r#"
 foreach ($p in $plan) {
   Write-Host ('  {0,-40} cleaning... ' -f $p.N) -NoNewline
@@ -214,7 +228,8 @@ Write-Host ''
 Write-Host '--- DISM /StartComponentCleanup /ResetBase ---'
 & dism.exe /Online /Cleanup-Image /StartComponentCleanup /ResetBase | Out-Null
 Write-Host '  (DISM finished)'
-"# };
+"#
+    };
 
     blocks.push_str(&format!(
         r#"
@@ -279,9 +294,13 @@ fn linux_clean_script(deep: bool, dry_run: bool) -> String {
   '[deep] cargo registry|'$HOME'/.cargo/registry/cache:'$HOME'/.cargo/registry/src'
   '[deep] sccache|'$HOME'/.cache/sccache'
   '[deep] mise tool installs|'$HOME'/.local/share/mise/installs'"#
-    } else { "" };
+    } else {
+        ""
+    };
 
-    let action = if dry_run { "" } else {
+    let action = if dry_run {
+        ""
+    } else {
         r#"
 echo
 echo "--- Cleaning ---"
@@ -305,7 +324,8 @@ fi
 if command -v journalctl >/dev/null 2>&1; then
   sudo journalctl --vacuum-time=2d >/dev/null 2>&1 || true
 fi
-"# };
+"#
+    };
 
     format!(
         r#"set +e

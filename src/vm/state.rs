@@ -1,10 +1,10 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VmState {
-    pub uuid:         String,
+    pub uuid: String,
     pub display_name: String,
 }
 
@@ -30,16 +30,15 @@ pub fn load(vm_name: &str) -> Result<VmState> {
             vm_name
         );
     }
-    let raw = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| "parsing VM state")
 }
 
 pub fn save(vm_name: &str, state: &VmState) -> Result<()> {
     let path = state_file(vm_name)?;
     let json = serde_json::to_string_pretty(state)?;
-    std::fs::write(&path, json)
-        .with_context(|| format!("writing {}", path.display()))
+    std::fs::write(&path, json).with_context(|| format!("writing {}", path.display()))
 }
 
 pub fn exists(vm_name: &str) -> bool {

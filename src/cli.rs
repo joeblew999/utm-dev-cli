@@ -8,7 +8,7 @@ use crate::cmd::{clean, doctor, init, mcp, platform, screenshot, setup, vm};
 /// MSVC cross-tools handle x86_64 from an ARM64 VM. On Linux, `X8664` and
 /// `Both` aren't yet supported (multi-arch system libs required for WebKit
 /// GTK) — use a Linux x86_64 host or wait for a follow-up.
-#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq, Default)]
 pub enum BuildTarget {
     /// Native ARM64 only
     #[value(name = "arm64")]
@@ -18,11 +18,8 @@ pub enum BuildTarget {
     X8664,
     /// Both arm64 and x86_64
     #[value(name = "both")]
+    #[default]
     Both,
-}
-
-impl Default for BuildTarget {
-    fn default() -> Self { BuildTarget::Both }
 }
 
 #[derive(Parser)]
@@ -69,7 +66,7 @@ pub enum Commands {
     Screenshot {
         /// Output PNG path. Defaults to <project>/screenshots/app.png.
         #[arg(long)]
-        out:  Option<String>,
+        out: Option<String>,
         /// WebDriver port to use. Defaults to 4444.
         #[arg(long)]
         port: Option<u16>,

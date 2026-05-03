@@ -10,7 +10,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const MIN_BYTES: u64 = 10_000_000;     // 10 MB threshold for misc caches
+const MIN_BYTES: u64 = 10_000_000; // 10 MB threshold for misc caches
 const MIN_RUST_TARGET: u64 = 50_000_000; // 50 MB threshold for target/
 
 struct Target {
@@ -48,7 +48,7 @@ pub fn run(deep: bool) -> Result<()> {
 
     let total: u64 = targets.iter().map(|t| t.bytes).sum();
     println!();
-    println!("  {:>2}  {:<40} {}", "#", "What", "Size");
+    println!("  {:>2}  {:<40} Size", "#", "What");
     println!("  {}", "─".repeat(55));
     for (i, t) in targets.iter().enumerate() {
         println!("  {:>2}  {:<40} {}", i + 1, t.label, fmt(t.bytes));
@@ -83,11 +83,10 @@ pub fn run(deep: bool) -> Result<()> {
     for (path, reason) in protected_paths(&home) {
         if path.exists() {
             let bytes = dir_bytes(&path);
-            let short = path.display().to_string().replacen(
-                home.to_str().unwrap_or(""),
-                "~",
-                1,
-            );
+            let short = path
+                .display()
+                .to_string()
+                .replacen(home.to_str().unwrap_or(""), "~", 1);
             println!("  {} ({}) — {}", short, fmt(bytes), reason);
         }
     }
@@ -130,7 +129,10 @@ fn scan(home: &Path, deep: bool) -> Result<Vec<Target>> {
                 .take(2)
                 .map(|c| c.as_os_str().to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
-            let label = format!("Rust: {}", label.iter().rev().cloned().collect::<Vec<_>>().join("/"));
+            let label = format!(
+                "Rust: {}",
+                label.iter().rev().cloned().collect::<Vec<_>>().join("/")
+            );
             let cargo_toml = parent.join("Cargo.toml");
             let target_path = target_dir.clone();
             t.push(Target {
@@ -152,58 +154,90 @@ fn scan(home: &Path, deep: bool) -> Result<Vec<Target>> {
     }
 
     // 2. iOS unavailable simulators (macOS only)
-    if cfg!(target_os = "macos") {
-        if let Ok(out) = Command::new("xcrun")
+    if cfg!(target_os = "macos")
+        && let Ok(out) = Command::new("xcrun")
             .args(["simctl", "list", "devices", "unavailable", "-j"])
             .output()
-        {
-            if out.status.success() {
-                if let Ok(json) = String::from_utf8(out.stdout) {
-                    let count = count_unavailable_devices(&json);
-                    if count > 0 {
-                        let est = count as u64 * 500_000_000;
-                        t.push(Target {
-                            label: format!("iOS simulators ({} unavailable)", count),
-                            bytes: est,
-                            clean: Box::new(|| {
-                                let _ = Command::new("xcrun")
-                                    .args(["simctl", "delete", "unavailable"])
-                                    .output();
-                                Ok(())
-                            }),
-                        });
-                    }
-                }
-            }
+        && out.status.success()
+        && let Ok(json) = String::from_utf8(out.stdout)
+    {
+        let count = count_unavailable_devices(&json);
+        if count > 0 {
+            let est = count as u64 * 500_000_000;
+            t.push(Target {
+                label: format!("iOS simulators ({} unavailable)", count),
+                bytes: est,
+                clean: Box::new(|| {
+                    let _ = Command::new("xcrun")
+                        .args(["simctl", "delete", "unavailable"])
+                        .output();
+                    Ok(())
+                }),
+            });
         }
     }
 
     // 3-9. Standard cache directories
-    add_cache(&mut t, home.join("Library/Developer/CoreSimulator/Caches"), "CoreSimulator caches");
-    add_cache(&mut t, home.join("Library/Developer/Xcode/DerivedData"), "Xcode DerivedData");
-    add_cache(&mut t, home.join(".cargo/registry/cache"), "Cargo registry cache");
+    add_cache(
+        &mut t,
+        home.join("Library/Developer/CoreSimulator/Caches"),
+        "CoreSimulator caches",
+    );
+    add_cache(
+        &mut t,
+        home.join("Library/Developer/Xcode/DerivedData"),
+        "Xcode DerivedData",
+    );
+    add_cache(
+        &mut t,
+        home.join(".cargo/registry/cache"),
+        "Cargo registry cache",
+    );
     add_cache(&mut t, home.join(".gradle/caches"), "Gradle caches");
     add_cache(&mut t, home.join(".bun/install/cache"), "Bun install cache");
     add_cache_with(&mut t, home.join(".npm/_cacache"), "npm cache", || {
-        let _ = Command::new("npm").args(["cache", "clean", "--force"]).output();
+        let _ = Command::new("npm")
+            .args(["cache", "clean", "--force"])
+            .output();
         Ok(())
     });
-    add_cache(&mut t, home.join("Library/Caches/CocoaPods"), "CocoaPods cache");
+    add_cache(
+        &mut t,
+        home.join("Library/Caches/CocoaPods"),
+        "CocoaPods cache",
+    );
 
     if deep {
-        add_cache_with(&mut t, home.join("Library/Caches/Homebrew"), "Homebrew cache", || {
-            let _ = Command::new("brew").args(["cleanup", "--prune=all"]).output();
-            Ok(())
-        });
-        add_cache(&mut t, home.join("Library/Developer/Xcode/Archives"), "Xcode Archives");
-        add_cache(&mut t, home.join("Library/Developer/Xcode/iOS DeviceSupport"), "Xcode iOS DeviceSupport");
+        add_cache_with(
+            &mut t,
+            home.join("Library/Caches/Homebrew"),
+            "Homebrew cache",
+            || {
+                let _ = Command::new("brew")
+                    .args(["cleanup", "--prune=all"])
+                    .output();
+                Ok(())
+            },
+        );
+        add_cache(
+            &mut t,
+            home.join("Library/Developer/Xcode/Archives"),
+            "Xcode Archives",
+        );
+        add_cache(
+            &mut t,
+            home.join("Library/Developer/Xcode/iOS DeviceSupport"),
+            "Xcode iOS DeviceSupport",
+        );
 
         if Path::new("/var/run/docker.sock").exists() {
             t.push(Target {
                 label: "Docker (unused images, build cache)".into(),
                 bytes: 0,
                 clean: Box::new(|| {
-                    let _ = Command::new("docker").args(["system", "prune", "-af"]).output();
+                    let _ = Command::new("docker")
+                        .args(["system", "prune", "-af"])
+                        .output();
                     Ok(())
                 }),
             });
@@ -267,7 +301,8 @@ fn find_target_dirs(root: &Path, max_depth: usize) -> Vec<PathBuf> {
                 continue; // don't recurse into target/
             }
             // Skip noisy hidden dirs
-            if path.file_name()
+            if path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .map(|n| n.starts_with('.') || n == "node_modules")
                 .unwrap_or(false)
@@ -289,7 +324,12 @@ fn dir_bytes(path: &Path) -> u64 {
         _ => return 0,
     };
     let s = String::from_utf8_lossy(&out.stdout);
-    let kb: u64 = s.split_whitespace().next().unwrap_or("0").parse().unwrap_or(0);
+    let kb: u64 = s
+        .split_whitespace()
+        .next()
+        .unwrap_or("0")
+        .parse()
+        .unwrap_or(0);
     kb * 1024
 }
 
@@ -311,7 +351,7 @@ fn fmt(bytes: u64) -> String {
 struct DiskFree {
     total: String,
     avail: String,
-    pct:   String,
+    pct: String,
 }
 
 fn disk_free() -> DiskFree {
@@ -324,21 +364,25 @@ fn disk_free() -> DiskFree {
     let parts: Vec<String> = out
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| s.lines().nth(1).map(|l| l.split_whitespace().map(String::from).collect()))
+        .and_then(|s| {
+            s.lines()
+                .nth(1)
+                .map(|l| l.split_whitespace().map(String::from).collect())
+        })
         .unwrap_or_default();
     DiskFree {
         total: parts.get(1).cloned().unwrap_or_else(|| "?".into()),
         avail: parts.get(3).cloned().unwrap_or_else(|| "?".into()),
-        pct:   parts.get(4).cloned().unwrap_or_else(|| "?".into()),
+        pct: parts.get(4).cloned().unwrap_or_else(|| "?".into()),
     }
 }
 
 fn protected_paths(home: &Path) -> Vec<(PathBuf, &'static str)> {
     vec![
-        (home.join(".cache/utm-dev"),                       "box images (~6 GB download)"),
-        (home.join("Library/Containers/com.utmapp.UTM"),    "your VMs"),
-        (home.join(".rustup/toolchains"),                   "Rust toolchains"),
-        (home.join(".android-sdk"),                         "Android SDK"),
+        (home.join(".cache/utm-dev"), "box images (~6 GB download)"),
+        (home.join("Library/Containers/com.utmapp.UTM"), "your VMs"),
+        (home.join(".rustup/toolchains"), "Rust toolchains"),
+        (home.join(".android-sdk"), "Android SDK"),
     ]
 }
 

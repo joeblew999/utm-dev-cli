@@ -77,11 +77,16 @@ pub fn run(name: &str, bin: Option<&str>) -> anyhow::Result<()> {
     let port_str = profile.ssh_port.to_string();
     let status = std::process::Command::new("ssh")
         .args([
-            "-p", &port_str,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
-            "-o", "BatchMode=yes",
+            "-p",
+            &port_str,
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "BatchMode=yes",
         ])
         .arg(&target)
         .arg(&cmd)
@@ -101,7 +106,10 @@ pub fn run(name: &str, bin: Option<&str>) -> anyhow::Result<()> {
 /// locations on the VM and returns the first that exists. Tauri ARM64 Linux
 /// builds default to `aarch64-unknown-linux-gnu`; Windows VMs always emit
 /// `x86_64-pc-windows-msvc` (see GAPS #1).
-fn auto_detect_bin(profile: &profiles::VmProfile, session: &ssh::Session) -> anyhow::Result<String> {
+fn auto_detect_bin(
+    profile: &profiles::VmProfile,
+    session: &ssh::Session,
+) -> anyhow::Result<String> {
     let project_dir = std::env::current_dir()?;
     let project_name = project_dir
         .file_name()
@@ -119,16 +127,19 @@ fn auto_detect_bin(profile: &profiles::VmProfile, session: &ssh::Session) -> any
             "auto-detect failed: no Cargo.toml found in {} or src-tauri/. Pass --bin explicitly.",
             project_dir.display()
         ))?;
-    let pkg_name = parse_package_name(&cargo_content)
-        .ok_or_else(|| anyhow::anyhow!("auto-detect failed: no [package] name in Cargo.toml. Pass --bin explicitly."))?;
+    let pkg_name = parse_package_name(&cargo_content).ok_or_else(|| {
+        anyhow::anyhow!(
+            "auto-detect failed: no [package] name in Cargo.toml. Pass --bin explicitly."
+        )
+    })?;
 
     let (triple, ext, sep) = match profile.os {
         profiles::GuestOs::Windows => ("x86_64-pc-windows-msvc", ".exe", '\\'),
-        profiles::GuestOs::Linux   => ("aarch64-unknown-linux-gnu", "",   '/'),
+        profiles::GuestOs::Linux => ("aarch64-unknown-linux-gnu", "", '/'),
     };
     let vm_home = match profile.os {
         profiles::GuestOs::Windows => format!("C:\\Users\\{}", profile.user),
-        profiles::GuestOs::Linux   => format!("/home/{}", profile.user),
+        profiles::GuestOs::Linux => format!("/home/{}", profile.user),
     };
 
     // Candidate paths in priority order:
@@ -150,7 +161,9 @@ fn auto_detect_bin(profile: &profiles::VmProfile, session: &ssh::Session) -> any
 
     let mut candidates: Vec<String> = Vec::new();
     if ctd != "DEFAULT" && !ctd.is_empty() {
-        candidates.push(format!("{ctd}{sep}{triple}{sep}release{sep}{pkg_name}{ext}"));
+        candidates.push(format!(
+            "{ctd}{sep}{triple}{sep}release{sep}{pkg_name}{ext}"
+        ));
     }
     candidates.push(format!(
         "{vm_home}{sep}{project_name}{sep}src-tauri{sep}target{sep}{triple}{sep}release{sep}{pkg_name}{ext}"
@@ -184,7 +197,9 @@ fn parse_package_name(content: &str) -> Option<String> {
     let pkg_idx = content.find("[package]")?;
     for line in content[pkg_idx..].lines().skip(1) {
         let l = line.trim();
-        if l.starts_with('[') { return None; } // entered next section
+        if l.starts_with('[') {
+            return None;
+        } // entered next section
         if let Some(rest) = l.strip_prefix("name") {
             let rest = rest.trim_start_matches([' ', '\t', '=']);
             let rest = rest.trim();

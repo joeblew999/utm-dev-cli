@@ -5,7 +5,7 @@
 ///
 /// Each box is a .tar.gz containing a .utm bundle. The bundle already has VirtIO drivers,
 /// WinRM, and SSH pre-configured — bootstrap (ssh.rs / bootstrap.rs) runs AFTER import.
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -58,7 +58,10 @@ fn prepare_bundle_for_import(cached: &Path, profile: &VmProfile) -> Result<PathB
     // Wipe stale prepared copy from a prior failed run.
     let _ = std::fs::remove_dir_all(&target);
 
-    println!("→ Preparing bundle for import (renaming to '{}')...", profile.name);
+    println!(
+        "→ Preparing bundle for import (renaming to '{}')...",
+        profile.name
+    );
     let status = std::process::Command::new("cp")
         .args(["-a"])
         .arg(cached)
@@ -97,8 +100,7 @@ fn rewrite_plist_name(plist_path: &Path, new_name: &str) -> Result<()> {
     out.push_str(&xml[..content_start]);
     out.push_str(new_name);
     out.push_str(&xml[content_end..]);
-    std::fs::write(plist_path, out)
-        .with_context(|| format!("writing {}", plist_path.display()))?;
+    std::fs::write(plist_path, out).with_context(|| format!("writing {}", plist_path.display()))?;
     Ok(())
 }
 
@@ -127,7 +129,10 @@ fn download_prebaked(profile: &VmProfile, url: &str) -> Result<PathBuf> {
     let partial = dest.with_extension("box.partial");
     let resume_from = std::fs::metadata(&partial).map(|m| m.len()).unwrap_or(0);
     if resume_from > 0 {
-        println!("  Resuming from {:.2} GB...", resume_from as f64 / 1_073_741_824.0);
+        println!(
+            "  Resuming from {:.2} GB...",
+            resume_from as f64 / 1_073_741_824.0
+        );
     }
 
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -148,7 +153,8 @@ fn download_prebaked(profile: &VmProfile, url: &str) -> Result<PathBuf> {
         println!("  (server doesn't support resume — starting from 0)");
     }
     let starting_offset = if resumed { resume_from } else { 0 };
-    let body_len: u64 = resp.headers()
+    let body_len: u64 = resp
+        .headers()
         .get("content-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok())
@@ -178,7 +184,9 @@ fn download_prebaked(profile: &VmProfile, url: &str) -> Result<PathBuf> {
     let mut buf = [0u8; 64 * 1024];
     loop {
         let n = body_reader.read(&mut buf)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         file.write_all(&buf[..n])?;
         pb.inc(n as u64);
     }
@@ -289,7 +297,8 @@ fn download_box(profile: &VmProfile) -> Result<PathBuf> {
     }
     let starting_offset = if resumed { resume_from } else { 0 };
 
-    let body_len: u64 = resp.headers()
+    let body_len: u64 = resp
+        .headers()
         .get("content-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok())
@@ -328,7 +337,11 @@ fn download_box(profile: &VmProfile) -> Result<PathBuf> {
     }
     pb.finish_with_message("downloaded");
 
-    let min_size: u64 = if is_windows { 1_000_000_000 } else { 100_000_000 };
+    let min_size: u64 = if is_windows {
+        1_000_000_000
+    } else {
+        100_000_000
+    };
     if std::fs::metadata(&partial)?.len() < min_size {
         let _ = std::fs::remove_file(&partial);
         bail!("Downloaded file too small — likely a failed/partial download");
@@ -372,12 +385,14 @@ fn extract_box(box_path: &Path, profile: &VmProfile) -> Result<PathBuf> {
     );
     pb.enable_steady_tick(Duration::from_secs(5));
 
-    let file = std::fs::File::open(box_path)
-        .with_context(|| format!("opening {}", box_path.display()))?;
+    let file =
+        std::fs::File::open(box_path).with_context(|| format!("opening {}", box_path.display()))?;
     let tracked = pb.wrap_read(file);
     let gz = flate2::read::GzDecoder::new(tracked);
     let mut archive = tar::Archive::new(gz);
-    archive.unpack(&dest_dir).context("extracting box archive")?;
+    archive
+        .unpack(&dest_dir)
+        .context("extracting box archive")?;
     pb.finish_with_message("extracted");
 
     let bundle = find_utm_bundle(&dest_dir)?;
@@ -402,10 +417,10 @@ fn find_utm_bundle(dir: &Path) -> Result<PathBuf> {
         if path.is_dir() && path.extension().map(|e| e == "utm").unwrap_or(false) {
             return Ok(path);
         }
-        if path.is_dir() {
-            if let Ok(inner) = find_utm_bundle(&path) {
-                return Ok(inner);
-            }
+        if path.is_dir()
+            && let Ok(inner) = find_utm_bundle(&path)
+        {
+            return Ok(inner);
         }
     }
     bail!("No .utm bundle found in extracted box at {}", dir.display())
@@ -419,10 +434,8 @@ fn import_utm_bundle(bundle: &Path) -> Result<(String, String)> {
     let bundle_str = bundle.to_str().context("bundle path not valid UTF-8")?;
 
     // Snapshot existing UUIDs so we can find the newly imported one
-    let before: std::collections::HashSet<String> = utm::list_vms()?
-        .into_iter()
-        .map(|e| e.uuid)
-        .collect();
+    let before: std::collections::HashSet<String> =
+        utm::list_vms()?.into_iter().map(|e| e.uuid).collect();
 
     // Use the correct UTM AppleScript: "import new virtual machine from POSIX file"
     let script = format!(
@@ -458,7 +471,8 @@ fn import_utm_bundle(bundle: &Path) -> Result<(String, String)> {
                         "UTM registered '{}' ({}) but its bundle is missing from \
                          ~/Library/Containers/com.utmapp.UTM/Data/Documents — \
                          likely a name collision. Cleaned up the orphan; please retry.",
-                        entry.name, entry.uuid
+                        entry.name,
+                        entry.uuid
                     );
                 }
                 println!("✓ Imported: {} ({})", entry.name, entry.uuid);

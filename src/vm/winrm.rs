@@ -1,30 +1,29 @@
 /// WinRM SOAP client — no Python/pywinrm dependency.
 /// Ported from _winrm.ts.  Uses HTTP Basic auth over plain HTTP (port 5985).
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const RESOURCE_CMD: &str =
-    "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd";
+const RESOURCE_CMD: &str = "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd";
 
 pub struct CmdResult {
-    pub stdout:    String,
-    pub stderr:    String,
+    pub stdout: String,
+    pub stderr: String,
     pub exit_code: i32,
 }
 
 pub struct WinRM {
-    url:   String,
-    auth:  String,
+    url: String,
+    auth: String,
     agent: ureq::Agent,
 }
 
 impl WinRM {
     pub fn new(host: &str, port: u16, user: &str, pass: &str) -> Result<Self> {
-        let url   = format!("http://{host}:{port}/wsman");
+        let url = format!("http://{host}:{port}/wsman");
         let creds = format!("{user}:{pass}");
-        let auth  = base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
+        let auth = base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(600)))
             .build()
@@ -59,13 +58,14 @@ impl WinRM {
   </s:Header>
   <s:Body>{body}</s:Body>
 </s:Envelope>"#,
-            url      = self.url,
-            msg_id   = new_message_id(),
+            url = self.url,
+            msg_id = new_message_id(),
         )
     }
 
     fn request(&self, xml: &str) -> Result<String> {
-        let resp = self.agent
+        let resp = self
+            .agent
             .post(&self.url)
             .header("Content-Type", "application/soap+xml;charset=UTF-8")
             .header("Authorization", &format!("Basic {}", self.auth))
@@ -77,7 +77,9 @@ impl WinRM {
             let snippet = &text[..text.len().min(400)];
             bail!("WinRM HTTP {status}: {snippet}");
         }
-        resp.into_body().read_to_string().context("reading WinRM response")
+        resp.into_body()
+            .read_to_string()
+            .context("reading WinRM response")
     }
 
     // ── Shell lifecycle ──────────────────────────────────────────────────────
@@ -133,12 +135,12 @@ impl WinRM {
     </rsp:Receive>"#
         );
 
-        let mut stdout    = String::new();
-        let mut stderr    = String::new();
+        let mut stdout = String::new();
+        let mut stderr = String::new();
         let mut exit_code = -1i32;
 
         loop {
-            let recv    = self.request(&self.envelope(
+            let recv = self.request(&self.envelope(
                 "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Receive",
                 &recv_body,
                 Some(shell_id),
@@ -160,8 +162,8 @@ impl WinRM {
         }
 
         Ok(CmdResult {
-            stdout:    stdout.trim().to_string(),
-            stderr:    stderr.trim().to_string(),
+            stdout: stdout.trim().to_string(),
+            stderr: stderr.trim().to_string(),
             exit_code,
         })
     }
@@ -174,9 +176,9 @@ impl WinRM {
             .encode_utf16()
             .flat_map(|c| c.to_le_bytes())
             .collect();
-        let encoded  = base64::engine::general_purpose::STANDARD.encode(&utf16);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16);
         let shell_id = self.create_shell()?;
-        let result   = self.exec_command(
+        let result = self.exec_command(
             &shell_id,
             "powershell.exe",
             &["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded],
@@ -232,12 +234,18 @@ Start-ScheduledTask -TaskName 'BootstrapStep'
 ";
         self.run_ps(register)?;
 
-        let started  = SystemTime::now();
+        let started = SystemTime::now();
         let deadline = started + Duration::from_secs(timeout_secs);
         while SystemTime::now() < deadline {
             std::thread::sleep(Duration::from_secs(5));
-            let elapsed = SystemTime::now().duration_since(started).unwrap_or_default().as_secs();
-            print!("\r    ... [{:>4}s / {}s] still running", elapsed, timeout_secs);
+            let elapsed = SystemTime::now()
+                .duration_since(started)
+                .unwrap_or_default()
+                .as_secs();
+            print!(
+                "\r    ... [{:>4}s / {}s] still running",
+                elapsed, timeout_secs
+            );
             let _ = std::io::Write::flush(&mut std::io::stdout());
 
             // Primary: sentinel file. Secondary: scheduled-task state.
@@ -246,15 +254,13 @@ Start-ScheduledTask -TaskName 'BootstrapStep'
                 "if (Test-Path 'C:\\bootstrap-step-done.txt') { 'DONE' } \
                  else { (Get-ScheduledTask -TaskName 'BootstrapStep' -ErrorAction SilentlyContinue).State }",
             );
-            match probe {
-                Ok(r) => {
-                    let s = r.stdout.trim();
-                    if s == "DONE" || (!s.is_empty() && s != "Running") {
-                        println!(); // newline after carriage-return progress
-                        break;
-                    }
+            // Err is ignored — WinRM may drop during heavy I/O; keep polling.
+            if let Ok(r) = probe {
+                let s = r.stdout.trim();
+                if s == "DONE" || (!s.is_empty() && s != "Running") {
+                    println!(); // newline after carriage-return progress
+                    break;
                 }
-                Err(_) => {} // WinRM may drop during heavy I/O — keep polling
             }
         }
 
@@ -318,15 +324,15 @@ fn extract_streams(xml: &str) -> (String, String) {
 
     let mut pos = 0;
     while let Some(rel) = xml[pos..].find("<rsp:Stream") {
-        let abs     = pos + rel;
+        let abs = pos + rel;
         let tag_end = match xml[abs..].find('>') {
             Some(e) => abs + e + 1,
-            None    => break,
+            None => break,
         };
         let tag = &xml[abs..tag_end];
         let close = match xml[tag_end..].find("</") {
             Some(e) => tag_end + e,
-            None    => break,
+            None => break,
         };
         let data = xml[tag_end..close].trim();
         if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data) {
@@ -347,7 +353,7 @@ fn extract_streams(xml: &str) -> (String, String) {
 
 fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
-     .replace('<', "&lt;")
-     .replace('>', "&gt;")
-     .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }

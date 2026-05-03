@@ -16,8 +16,8 @@
 //! `_screenshot.ts`. Same protocol, no behavioural changes — just Rust
 //! instead of Bun/TypeScript.
 
-use anyhow::{bail, Context, Result};
-use serde_json::{json, Value};
+use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -41,7 +41,7 @@ pub fn run(out: Option<&str>, port: Option<u16>) -> Result<()> {
     // Default output path; caller can override.
     let out_path = match out {
         Some(p) => PathBuf::from(p),
-        None    => project_root.join("screenshots").join("app.png"),
+        None => project_root.join("screenshots").join("app.png"),
     };
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -49,9 +49,12 @@ pub fn run(out: Option<&str>, port: Option<u16>) -> Result<()> {
 
     println!("→ capturing screenshot...");
     let png = session.capture_screenshot()?;
-    std::fs::write(&out_path, &png)
-        .with_context(|| format!("writing {}", out_path.display()))?;
-    println!("  saved to {} ({:.1} KB)", out_path.display(), png.len() as f64 / 1024.0);
+    std::fs::write(&out_path, &png).with_context(|| format!("writing {}", out_path.display()))?;
+    println!(
+        "  saved to {} ({:.1} KB)",
+        out_path.display(),
+        png.len() as f64 / 1024.0
+    );
 
     // Drop runs cleanup
     Ok(())
@@ -67,7 +70,9 @@ fn find_tauri_root() -> Result<PathBuf> {
             return Ok(dir);
         }
         if !dir.pop() {
-            bail!("not in a Tauri project (no src-tauri/tauri.conf.json found walking up from cwd)");
+            bail!(
+                "not in a Tauri project (no src-tauri/tauri.conf.json found walking up from cwd)"
+            );
         }
     }
 }
@@ -75,11 +80,11 @@ fn find_tauri_root() -> Result<PathBuf> {
 // ── WebDriver session ────────────────────────────────────────────────────────
 
 struct Session {
-    base_url:   String,
+    base_url: String,
     session_id: String,
     /// Owned children. Killed on Drop. The proxy first, then the app — matches
     /// startup order and keeps the proxy alive long enough to hand off cleanly.
-    procs:      Vec<Child>,
+    procs: Vec<Child>,
 }
 
 impl Session {
@@ -102,9 +107,16 @@ impl Session {
 
 /// ureq 3 doesn't expose a direct JSON helper on Body — read text, parse.
 fn read_json(resp: ureq::http::Response<ureq::Body>) -> Result<Value> {
-    let text = resp.into_body().read_to_string().context("reading response body")?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("parsing JSON: {}", text.chars().take(200).collect::<String>()))
+    let text = resp
+        .into_body()
+        .read_to_string()
+        .context("reading response body")?;
+    serde_json::from_str(&text).with_context(|| {
+        format!(
+            "parsing JSON: {}",
+            text.chars().take(200).collect::<String>()
+        )
+    })
 }
 
 /// POST a serializable body as JSON; ureq 3 takes raw `&str`/`&[u8]` via `.send()`.
@@ -130,7 +142,9 @@ impl Drop for Session {
 }
 
 fn clean_single_instance_sockets() {
-    let Ok(entries) = std::fs::read_dir("/tmp") else { return };
+    let Ok(entries) = std::fs::read_dir("/tmp") else {
+        return;
+    };
     for entry in entries.flatten() {
         if entry.file_name().to_string_lossy().ends_with("_si.sock") {
             let _ = std::fs::remove_file(entry.path());
@@ -158,7 +172,7 @@ fn start_session(project_root: &Path, port: u16) -> Result<Session> {
         .to_string();
 
     let manifest = project_root.join("src-tauri").join("Cargo.toml");
-    let binary   = project_root
+    let binary = project_root
         .join("src-tauri")
         .join("target")
         .join("debug")
@@ -175,7 +189,10 @@ fn start_session(project_root: &Path, port: u16) -> Result<Session> {
         bail!("cargo build --features webdriver failed (exit {})", status);
     }
     if !binary.exists() {
-        bail!("expected binary not found after build: {}", binary.display());
+        bail!(
+            "expected binary not found after build: {}",
+            binary.display()
+        );
     }
     println!();
 
@@ -219,11 +236,21 @@ fn start_session(project_root: &Path, port: u16) -> Result<Session> {
         "page-ready",
         Duration::from_secs(10),
         Duration::from_millis(500),
-        || Ok(if is_page_ready(&base_url, &session_id).unwrap_or(false) { Some(()) } else { None }),
+        || {
+            Ok(if is_page_ready(&base_url, &session_id).unwrap_or(false) {
+                Some(())
+            } else {
+                None
+            })
+        },
     )?;
     println!("  ready\n");
 
-    Ok(Session { base_url, session_id, procs })
+    Ok(Session {
+        base_url,
+        session_id,
+        procs,
+    })
 }
 
 fn try_create_session(base_url: &str, binary: &Path) -> Result<Option<String>> {
