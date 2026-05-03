@@ -99,8 +99,8 @@ pub fn run(name: &str, dry_run: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-const SCRIPT_WINDOWS: &str = include_str!("../../../scripts/debloat/windows.ps1");
-const SCRIPT_WINDOWS_ACTION: &str = include_str!("../../../scripts/debloat/windows-action.ps1");
+const SCRIPT_WINDOWS: &str = include_str!("../../../scripts/debloat/windows/main.ps1");
+const SCRIPT_WINDOWS_ACTION: &str = include_str!("../../../scripts/debloat/windows/action.ps1");
 
 fn windows_debloat_script(dry_run: bool) -> String {
     let prefixes_ps = DEBLOAT_PREFIXES

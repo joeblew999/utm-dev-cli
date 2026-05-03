@@ -102,23 +102,48 @@ print "✓ tauri mac build via utm-dev"
 """
 
 [tasks."e2e:windows-run"]
-description = "smoke: copy the already-built .exe back to windows-build VM, run it, verify --version output. Skips if no .exe at .build/windows/x86_64/."
+description = "smoke: dogfood `utm-dev vm push` + `vm exec` to put the cross-built .exe on the windows-build VM and run it. Skips if no .exe at .build/windows/x86_64/."
 shell = "nu -c"
+depends = ["_e2e:build"]
 run = '''
 let exe = ".build/windows/x86_64/utm-dev.exe"
 if not ($exe | path exists) {
   print $"  (skip) ($exe) not present — run `utm-dev windows build --release` first"
   return
 }
-let ssh_opts = ["-p", "2222", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", "BatchMode=yes"]
-^scp -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes $exe 'vagrant@localhost:utm-dev.exe'
-let out = (^ssh ...$ssh_opts vagrant@localhost 'C:\Users\vagrant\utm-dev.exe --version' | str trim)
+let utm_dev = "./target/release/utm-dev"
+^$utm_dev vm push --name windows-build --from $exe --to "C:\\Users\\vagrant\\utm-dev.exe"
+let out = (^$utm_dev vm exec --name windows-build "C:\\Users\\vagrant\\utm-dev.exe --version" | str trim)
 print $"  windows VM ran utm-dev.exe and said: ($out)"
 if not ($out | str starts-with "utm-dev") {
   print "  ✗ unexpected output"
   exit 1
 }
-print "✓ windows .exe runs on the windows-build VM"
+print "✓ utm-dev push + exec round-trip on the windows-build VM"
+'''
+
+[tasks."e2e:vm-run"]
+description = "smoke: exercise `utm-dev vm run` + `vm logs` end-to-end against the windows-build VM. Pushes utm-dev.exe (assumed already there from e2e:windows-run), launches it via vm run, then asserts the captured run.log contains the binary's startup output."
+shell = "nu -c"
+depends = ["_e2e:build"]
+run = '''
+let exe = ".build/windows/x86_64/utm-dev.exe"
+if not ($exe | path exists) {
+  print $"  (skip) ($exe) not present — run `utm-dev windows build --release` first"
+  return
+}
+let utm_dev = "./target/release/utm-dev"
+# vm run launches the binary detached; without args it prints help to stdout
+# which Start-Process redirects into ~/.utm-dev-run/run.log on the VM.
+^$utm_dev vm run --name windows-build --bin "C:\\Users\\vagrant\\utm-dev.exe"
+sleep 3sec
+let log = (^$utm_dev vm logs --name windows-build --kind run --tail 50 | decode utf-8 | str trim)
+if not ($log | str contains "utm-dev") {
+  print "  ✗ vm run captured no recognizable output"
+  print $log
+  exit 1
+}
+print "✓ utm-dev vm run + vm logs round-trip on the windows-build VM"
 '''
 
 [tasks."e2e:fast"]
@@ -126,5 +151,9 @@ description = "host-only smoke (~25s) — quality + mac + demo-mac. No VM, no ne
 depends = ["rust:quality", "e2e:mac", "e2e:demo-mac"]
 
 [tasks."e2e:smoke"]
-description = "full smoke (~140s) — quality + all 5 e2e tasks including the 3 VM-touching ones. Pre-push gate. demo-mac skips if utm-dev-demo not cloned; windows-run skips if no .exe built."
-depends = ["rust:quality", "e2e:doctor", "e2e:clean-dry", "e2e:mac", "e2e:demo-mac", "e2e:windows-run"]
+description = "pre-push smoke (~50s) — quality + all VM tasks EXCEPT e2e:clean-dry (which scans the WU cache and takes 140s solo). Run e2e:clean-dry by hand or use e2e:smoke-full when working on vm clean."
+depends = ["rust:quality", "e2e:doctor", "e2e:mac", "e2e:demo-mac", "e2e:windows-run", "e2e:vm-run"]
+
+[tasks."e2e:smoke-full"]
+description = "the kitchen sink (~190s) — e2e:smoke + e2e:clean-dry. Use when you've touched src/cmd/vm/clean.rs or the scripts/clean/ payload. Otherwise use e2e:smoke."
+depends = ["e2e:smoke", "e2e:clean-dry"]

@@ -16,33 +16,33 @@
 
 use crate::vm::{profiles, ssh};
 
-const SCRIPT_LINUX: &str = include_str!("../../../scripts/clean/linux.sh");
-const SCRIPT_LINUX_DEEP: &str = include_str!("../../../scripts/clean/linux-deep.sh");
-const SCRIPT_LINUX_ACTION: &str = include_str!("../../../scripts/clean/linux-action.sh");
-const SCRIPT_WINDOWS: &str = include_str!("../../../scripts/clean/windows.ps1");
-const SCRIPT_WINDOWS_DEEP: &str = include_str!("../../../scripts/clean/windows-deep.ps1");
-const SCRIPT_WINDOWS_ACTION: &str = include_str!("../../../scripts/clean/windows-action.ps1");
+const SCRIPT_LINUX: &str = include_str!("../../../scripts/clean/linux/main.sh");
+const SCRIPT_LINUX_DEEP: &str = include_str!("../../../scripts/clean/linux/deep.sh");
+const SCRIPT_LINUX_ACTION: &str = include_str!("../../../scripts/clean/linux/action.sh");
+const SCRIPT_WINDOWS: &str = include_str!("../../../scripts/clean/windows/main.ps1");
+const SCRIPT_WINDOWS_DEEP: &str = include_str!("../../../scripts/clean/windows/deep.ps1");
+const SCRIPT_WINDOWS_ACTION: &str = include_str!("../../../scripts/clean/windows/action.ps1");
 
 const AGGRESSIVE_STEPS: &[(&str, &str)] = &[
     (
         "Hibernation: powercfg /h off",
-        include_str!("../../../scripts/clean/aggressive-hibernation.ps1"),
+        include_str!("../../../scripts/clean/windows/aggressive-hibernation.ps1"),
     ),
     (
         "VSS shadows: vssadmin delete shadows /all",
-        include_str!("../../../scripts/clean/aggressive-vss.ps1"),
+        include_str!("../../../scripts/clean/windows/aggressive-vss.ps1"),
     ),
     (
         "CompactOS: compress system files (slow)",
-        include_str!("../../../scripts/clean/aggressive-compactos.ps1"),
+        include_str!("../../../scripts/clean/windows/aggressive-compactos.ps1"),
     ),
     (
         "Pagefile: move to D:\\pagefile.sys (reboot to apply)",
-        include_str!("../../../scripts/clean/aggressive-pagefile.ps1"),
+        include_str!("../../../scripts/clean/windows/aggressive-pagefile.ps1"),
     ),
     (
         "Event logs: wevtutil cl (skipping SSH/Security/System/Setup)",
-        include_str!("../../../scripts/clean/aggressive-event-logs.ps1"),
+        include_str!("../../../scripts/clean/windows/aggressive-event-logs.ps1"),
     ),
 ];
 

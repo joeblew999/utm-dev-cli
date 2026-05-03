@@ -366,13 +366,20 @@ fn vm_logs(
         anyhow::bail!("--follow and --errors are mutually exclusive");
     }
 
+    // log_path is a PS-array-literal-suffix for Windows (one or more
+    // single-quoted paths, comma-joined). For Windows `run`, Start-Process
+    // splits stdout (run.log) and stderr (run.log.err) — we surface both.
+    // Linux's `vm run` redirects 2>&1 into run.log, so a single path suffices.
     let log_path = match (kind, &profile.os) {
         ("build", profiles::GuestOs::Linux) => "~/.utm-dev-build/build.log".to_string(),
         ("build", profiles::GuestOs::Windows) => {
-            r"%USERPROFILE%\.utm-dev-build\build.log".to_string()
+            r"'%USERPROFILE%\.utm-dev-build\build.log'".to_string()
         }
         ("run", profiles::GuestOs::Linux) => "~/.utm-dev-run/run.log".to_string(),
-        ("run", profiles::GuestOs::Windows) => r"%USERPROFILE%\.utm-dev-run\run.log".to_string(),
+        ("run", profiles::GuestOs::Windows) => {
+            r"'%USERPROFILE%\.utm-dev-run\run.log','%USERPROFILE%\.utm-dev-run\run.log.err'"
+                .to_string()
+        }
         _ => anyhow::bail!("unknown kind '{kind}' (expected: build | run)"),
     };
 
@@ -388,9 +395,10 @@ fn vm_logs(
                  {log_path} 2>/dev/null || echo '(no errors found in {log_path} — try `vm logs --tail 200`)'"
             ),
             profiles::GuestOs::Windows => format!(
-                r#"powershell -NoProfile -Command "if (Test-Path '{log_path}') {{ \
-                    $hits = Get-Content '{log_path}' | Select-String -Pattern '^error[:[ ]|^error\[E[0-9]+\]|^FAILED|panic|fatal error|mise ERROR|unresolved external symbol|LNK[0-9]+|cannot find -l|linker .* not found' -Context 1,5 -CaseSensitive:$false; \
-                    if ($hits) {{ $hits | ForEach-Object {{ $_.Context.PreContext + $_.Line + $_.Context.PostContext + '---' }} }} else {{ '(no errors found in {log_path} — try `vm logs --tail 200`)' }} \
+                r#"powershell -NoProfile -Command "$paths = @({log_path}) | Where-Object {{ Test-Path $_ }}; \
+                  if ($paths) {{ \
+                    $hits = Get-Content $paths | Select-String -Pattern '^error[:[ ]|^error\[E[0-9]+\]|^FAILED|panic|fatal error|mise ERROR|unresolved external symbol|LNK[0-9]+|cannot find -l|linker .* not found' -Context 1,5 -CaseSensitive:$false; \
+                    if ($hits) {{ $hits | ForEach-Object {{ $_.Context.PreContext + $_.Line + $_.Context.PostContext + '---' }} }} else {{ '(no errors found — try `vm logs --tail 200`)' }} \
                   }} else {{ '(no log yet)' }}""#
             ),
         }
@@ -404,13 +412,17 @@ fn vm_logs(
                 format!("cat {log_path} 2>/dev/null || echo '(no log yet)'")
             }
             (true, _, profiles::GuestOs::Windows) => format!(
-                r#"powershell -NoProfile -Command "Get-Content '{log_path}' -Wait -Tail 1000""#
+                // -Wait only takes one path. For run/Windows we follow the
+                // first-existing of stdout|stderr; the user's typical case is
+                // tailing run.log to watch a long-running process. Stderr
+                // is visible without --follow via `vm logs --kind run`.
+                r#"powershell -NoProfile -Command "$p = (@({log_path}) | Where-Object {{ Test-Path $_ }} | Select-Object -First 1); if ($p) {{ Get-Content $p -Wait -Tail 1000 }} else {{ '(no log yet)' }}""#
             ),
             (false, Some(n), profiles::GuestOs::Windows) => format!(
-                r#"powershell -NoProfile -Command "if (Test-Path '{log_path}') {{ Get-Content '{log_path}' -Tail {n} }} else {{ '(no log yet)' }}""#
+                r#"powershell -NoProfile -Command "$paths = @({log_path}) | Where-Object {{ Test-Path $_ }}; if ($paths) {{ Get-Content $paths -Tail {n} }} else {{ '(no log yet)' }}""#
             ),
             (false, None, profiles::GuestOs::Windows) => format!(
-                r#"powershell -NoProfile -Command "if (Test-Path '{log_path}') {{ Get-Content '{log_path}' }} else {{ '(no log yet)' }}""#
+                r#"powershell -NoProfile -Command "$paths = @({log_path}) | Where-Object {{ Test-Path $_ }}; if ($paths) {{ Get-Content $paths }} else {{ '(no log yet)' }}""#
             ),
         }
     };
