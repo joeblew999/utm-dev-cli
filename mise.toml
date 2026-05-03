@@ -27,30 +27,57 @@ run = "cargo run -- {{arg(name='args', var=true, help='arguments to pass to utm-
 description = "install utm-dev binary to ~/.cargo/bin"
 run = "cargo install --path ."
 
+# ── code quality ──────────────────────────────────────────────────────────────
+# Local-only checks: no VM, no network. Wired into e2e:smoke as the first gate
+# so style/lint regressions fail fast before the slower VM-touching tasks run.
+
+[tasks."rust:fmt"]
+description = "cargo fmt — apply formatting"
+run = "cargo fmt --all"
+
+[tasks."rust:fmt-check"]
+description = "cargo fmt --check — fail if formatting drift"
+run = "cargo fmt --all -- --check"
+
+[tasks."rust:clippy"]
+description = "cargo clippy --all-targets — fail on any warning"
+run = "cargo clippy --all-targets --no-deps -- -D warnings"
+
+[tasks."rust:quality"]
+description = "fmt-check + clippy — full local quality gate (no VM, no network)"
+depends = ["rust:fmt-check", "rust:clippy"]
+
 # ── e2e smoke tests ───────────────────────────────────────────────────────────
-# Fast regression check — exercises the paths we've actually rewritten:
-# ssh CLI subprocess, vm clean module, vm doctor module, mac native build,
-# mise.toml respect, ProjectKind detection. Skips the 18-min cross-compile
-# (manual dogfood for that). Total: ~30 sec when host binary is up to date.
+# Two layers:
+#   e2e:fast  — host-only (~25s). Run on every save.
+#   e2e:smoke — adds the 3 VM-touching tasks (~140s). Run before push.
 #
-# Run all:    mise run e2e:smoke
-# Run one:    mise run e2e:doctor   (or e2e:clean-dry, e2e:mac)
+# Both gate on rust:quality first so style/lint failures abort in <1s.
+# All e2e tasks depend on _e2e:build so cargo compiles once, not per task.
+
+[tasks."_e2e:build"]
+hide = true
+description = "build utm-dev once for the e2e tasks to share"
+run = "cargo build --release"
 
 [tasks."e2e:doctor"]
 description = "smoke: vm doctor on windows-build (ssh subprocess + doctor module)"
 shell = "nu -c"
-run = "cargo run --release -- vm doctor --name windows-build"
+depends = ["_e2e:build"]
+run = "^./target/release/utm-dev vm doctor --name windows-build"
 
 [tasks."e2e:clean-dry"]
 description = "smoke: vm clean --dry-run (ssh subprocess + clean module + UTF-8-lossy)"
 shell = "nu -c"
-run = "cargo run --release -- vm clean --name windows-build --dry-run"
+depends = ["_e2e:build"]
+run = "^./target/release/utm-dev vm clean --name windows-build --dry-run"
 
 [tasks."e2e:mac"]
 description = "smoke: native mac build + run (mise.toml respect + ProjectKind=Cargo + cargo wiring)"
 shell = "nu -c"
+depends = ["_e2e:build"]
 run = """
-cargo run --release -- mac build --release
+^./target/release/utm-dev mac build --release
 ^./.build/macos/arm64/utm-dev --version
 print "✓ mac build+run"
 """
@@ -58,13 +85,13 @@ print "✓ mac build+run"
 [tasks."e2e:demo-mac"]
 description = "smoke: Tauri path via utm-dev-demo (ProjectKind=Tauri). Skips if not cloned as ../utm-dev-demo (override with UTM_DEV_DEMO_PATH)."
 shell = "nu -c"
+depends = ["_e2e:build"]
 run = """
 let demo = ($env.UTM_DEV_DEMO_PATH? | default "../utm-dev-demo")
 if not ($demo | path exists) {
   print $"  (skip) ($demo) not present — clone https://github.com/joeblew999/utm-dev-demo or set UTM_DEV_DEMO_PATH"
   return
 }
-cargo build --release
 let utm_dev = (pwd | path join "target/release/utm-dev")
 # Trust the demo's mise.toml so `utm-dev mac build`'s internal `mise install`
 # doesn't bail on untrusted-config errors. Idempotent — no-op if already trusted.
@@ -94,6 +121,10 @@ if not ($out | str starts-with "utm-dev") {
 print "✓ windows .exe runs on the windows-build VM"
 '''
 
+[tasks."e2e:fast"]
+description = "host-only smoke (~25s) — quality + mac + demo-mac. No VM, no network. Run on every save."
+depends = ["rust:quality", "e2e:mac", "e2e:demo-mac"]
+
 [tasks."e2e:smoke"]
-description = "all e2e smoke tests — pre-push regression check (~30 sec when warm; demo-mac skips if not cloned, windows-run skips if no .exe built)"
-depends = ["e2e:doctor", "e2e:clean-dry", "e2e:mac", "e2e:demo-mac", "e2e:windows-run"]
+description = "full smoke (~140s) — quality + all 5 e2e tasks including the 3 VM-touching ones. Pre-push gate. demo-mac skips if utm-dev-demo not cloned; windows-run skips if no .exe built."
+depends = ["rust:quality", "e2e:doctor", "e2e:clean-dry", "e2e:mac", "e2e:demo-mac", "e2e:windows-run"]
