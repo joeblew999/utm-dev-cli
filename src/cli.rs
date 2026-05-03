@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::cmd::{clean, doctor, init, platform, setup, vm};
+use crate::cmd::{clean, doctor, init, mcp, platform, screenshot, setup, vm};
 
 /// Target architecture for VM builds.
 ///
@@ -58,6 +58,23 @@ pub enum Commands {
         deep: bool,
     },
 
+    /// Set up MCP servers (.mcp.json + .claude/settings.json) for AI-assisted
+    /// development. Idempotent — merges into existing JSON.
+    Mcp,
+
+    /// Capture the rendered Tauri WebView via WebDriver (host-side). Walks up
+    /// from cwd to find src-tauri/. Requires `tauri-webdriver` on PATH.
+    /// Different from `vm screenshot` (which is for Linux VMs and returns a
+    /// black PNG for WebKit-GTK content).
+    Screenshot {
+        /// Output PNG path. Defaults to <project>/screenshots/app.png.
+        #[arg(long)]
+        out:  Option<String>,
+        /// WebDriver port to use. Defaults to 4444.
+        #[arg(long)]
+        port: Option<u16>,
+    },
+
     /// Platform build/dev commands
     #[command(subcommand)]
     Mac(platform::MacCommands),
@@ -93,6 +110,8 @@ pub fn run() -> anyhow::Result<()> {
         Commands::Setup => setup::run(),
         Commands::Init { android } => init::run(android),
         Commands::Clean { deep } => clean::run(deep),
+        Commands::Mcp => mcp::run(),
+        Commands::Screenshot { out, port } => screenshot::run(out.as_deref(), port),
         Commands::Mac(cmd) => platform::run_mac(cmd),
         Commands::Ios(cmd) => platform::run_ios(cmd),
         Commands::Android(cmd) => platform::run_android(cmd),
