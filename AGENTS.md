@@ -85,4 +85,4 @@ Bootstrap installs the host's pubkey into both Linux (`~/.ssh/authorized_keys`) 
 
 `vm run --name X --bin <path>` launches a built binary inside the VM and captures stdout/stderr to `~/.utm-dev-run/run.log` (Linux: via `xvfb-run`; Windows: via `Start-Process` detached). Tail with `vm logs --kind run --follow`.
 
-For richer observability, apps can embed a Cloudflare-Worker-streaming logger that publishes startup events out-of-band. utm-dev stays unaware of that logger — it's the app's concern. See [`docs/adr-001-vm-run-observability.md`](docs/adr-001-vm-run-observability.md) for the rationale and integration sketch.
+For richer observability, apps can embed their own logger (e.g. one that POSTs startup events to a Cloudflare Worker) — utm-dev stays unaware. `vm run` only owns stdout capture; cross-machine observability is the app's concern.
