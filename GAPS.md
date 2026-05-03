@@ -49,23 +49,30 @@ The full pipeline is **proven against utm-dev-cli itself** (plain-cargo) AND **u
    creates both files with absolute resolved bin paths, second run is a
    clean no-op.
 
-8. ~~WebDriver-based screenshot~~ — **PORTED, NEEDS REAL TAURI TEST**.
-   `utm-dev screenshot` ported from `screenshot.ts` + `_screenshot.ts` to
-   `src/cmd/screenshot.rs`. Walks up from cwd to find `src-tauri/`, builds
-   with `--features webdriver`, spawns `tauri-webdriver` proxy + the app,
-   creates a W3C WebDriver session, captures via
-   `GET /session/<id>/screenshot`. Cleans up procs + `_si.sock` files on
-   Drop. Compiles cleanly; **end-to-end testing requires a real Tauri
-   project that exposes the `webdriver` cargo feature + `tauri-webdriver`
-   on PATH** (`cargo install tauri-webdriver --locked`). Until validated
-   against e.g. utm-dev-demo, treat as code-complete-but-unproven.
+8. ~~WebDriver-based screenshot~~ — **DONE + VERIFIED E2E**.
+   `utm-dev screenshot` (in `src/cmd/screenshot.rs`). Walks up from cwd
+   to find `src-tauri/`, builds with `--features webdriver`, spawns
+   `tauri-webdriver` proxy + the app, creates a W3C WebDriver session,
+   captures via `GET /session/<id>/screenshot`. Cleans up procs +
+   `_si.sock` files on Drop. **Verified end-to-end against utm-dev-demo
+   on 2026-05-03**: 1600×1200 RGBA PNG of the rendered Tauri WebView,
+   actual content (logos + form), not the black-PNG that gap #4's vm
+   screenshot produces.
+
+   Project-side prerequisites (one-time per Tauri project):
+   - Add `tauri-plugin-webdriver = { version = "0.2", optional = true }`
+     under `[dependencies]`.
+   - Add `[features] webdriver = ["dep:tauri-plugin-webdriver"]`.
+   - In `lib.rs`, register the plugin behind `#[cfg(feature = "webdriver")]`.
+
+   Host-side: `cargo install tauri-webdriver --locked` (one-time).
 
 ## Future direction
 
 **ewe-studios/ewe_platform/foundation_testbed** — a Linux-host equivalent of utm-dev. Same problem space, different host OS. Worth understanding for cross-pollination: shared CLI surface? shared mise-task layer? unified harness across Mac+Linux hosts?
 
-**`joeblew999/utm-dev` (TypeScript) — superseded; safe to archive after WebDriver screenshot is validated.**
-Last commit 2026-03-25, tagged v2.1.0. 18 mise tasks in TypeScript. utm-dev-cli is now a full superset: gap #7 (mcp) is done, gap #8 (WebDriver screenshot) is ported but unproven against a real Tauri project. Once #8 is validated, tag the TS repo final and archive; consumer Tauri repos that pin `git::utm-dev//.mise/tasks?ref=v2.1.0` should migrate to invoking `utm-dev-cli` directly.
+**`joeblew999/utm-dev` (TypeScript) — superseded; safe to archive.**
+Last commit 2026-03-25, tagged v2.1.0. 18 mise tasks in TypeScript. utm-dev-cli is a full functional superset — both gap #7 (mcp) and gap #8 (WebDriver screenshot) are now done and verified. Tag the TS repo final and archive; consumer Tauri repos that pin `git::utm-dev//.mise/tasks?ref=v2.1.0` should migrate to invoking `utm-dev-cli` directly.
 
 (Note: `docs/web/` in the utm-dev repo is unrelated CAD-app content — copy-paste mishap from another project. Not utm-dev documentation, ignore it.)
 
