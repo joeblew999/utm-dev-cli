@@ -5,8 +5,6 @@
 //! don't reinstall on next user creation. Idempotent — already-removed
 //! apps are a silent no-op. Windows-only.
 
-use base64::Engine;
-
 use crate::vm::{profiles, ssh};
 
 /// Curated list of Microsoft Store / inbox apps that ship in retail Windows
@@ -92,15 +90,7 @@ pub fn run(name: &str, dry_run: bool) -> anyhow::Result<()> {
     };
     println!("→ vm debloat on {name} — {mode}");
 
-    let script = windows_debloat_script(dry_run);
-    let utf16: Vec<u8> = script
-        .encode_utf16()
-        .flat_map(|c| c.to_le_bytes())
-        .collect();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16);
-    let cmd = format!("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}");
-
-    let (out, code) = ssh::exec_with_exit(&session, &cmd)?;
+    let (out, code) = ssh::exec_ps_windows(&session, &windows_debloat_script(dry_run))?;
     println!("{out}");
     if code != 0 {
         eprintln!("(some removals may have failed — non-fatal; re-running is safe)");

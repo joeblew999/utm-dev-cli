@@ -7,12 +7,11 @@
 //!                    CompactOS, VSS clear, pagefile to D:, event logs).
 //!                    Frees the most space; some require reboot to apply.
 //!
-//! Phase 1 (transient clean) runs as one PowerShell script over SSH —
-//! short and reliable. Phase 2 (aggressive tweaks) runs as separate
-//! per-step SSH execs so each step's outcome is visible even if a
-//! later step encounters an issue.
-
-use base64::Engine;
+//! Phase 1 (transient clean) runs as one PowerShell script over SSH.
+//! Phase 2 (aggressive tweaks) runs as separate per-step SSH execs so each
+//! step's outcome is visible even if a later step encounters an issue.
+//! Windows PS goes through [`ssh::exec_ps_windows`] which encodes the script
+//! and strips PowerShell's CLIXML noise from the output.
 
 use crate::vm::{profiles, ssh};
 
@@ -33,7 +32,6 @@ pub fn run(name: &str, deep: bool, aggressive: bool, dry_run: bool) -> anyhow::R
     };
     println!("→ vm clean on {name} — {mode}");
 
-    // Phase 1: scan + transient cleanup (single PS script — short, reliable).
     match profile.os {
         profiles::GuestOs::Linux => {
             let (out, code) = ssh::exec_with_exit(&session, &linux_clean_script(deep, dry_run))?;
@@ -43,15 +41,7 @@ pub fn run(name: &str, deep: bool, aggressive: bool, dry_run: bool) -> anyhow::R
             }
         }
         profiles::GuestOs::Windows => {
-            let script = windows_clean_script(deep, dry_run);
-            let utf16: Vec<u8> = script
-                .encode_utf16()
-                .flat_map(|c| c.to_le_bytes())
-                .collect();
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16);
-            let cmd =
-                format!("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}");
-            let (out, code) = ssh::exec_with_exit(&session, &cmd)?;
+            let (out, code) = ssh::exec_ps_windows(&session, &windows_clean_script(deep, dry_run))?;
             println!("{out}");
             if code != 0 {
                 eprintln!("(some transient-clean steps may have failed — non-fatal)");
@@ -59,7 +49,6 @@ pub fn run(name: &str, deep: bool, aggressive: bool, dry_run: bool) -> anyhow::R
         }
     }
 
-    // Phase 2: aggressive one-shot tweaks — runs as separate SSH execs.
     if aggressive && profile.os == profiles::GuestOs::Windows {
         run_aggressive_tweaks(&session, dry_run)?;
     }
@@ -140,11 +129,7 @@ foreach ($log in (& wevtutil.exe el 2>$null)) {
         }
         print!("  {label}...");
         let _ = std::io::Write::flush(&mut std::io::stdout());
-        let utf16: Vec<u8> = ps.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16);
-        let cmd =
-            format!("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}");
-        match ssh::exec_with_exit(session, &cmd) {
+        match ssh::exec_ps_windows(session, ps) {
             Ok((out, _code)) => {
                 println!();
                 for line in out.lines() {
@@ -169,8 +154,7 @@ foreach ($log in (& wevtutil.exe el 2>$null)) {
 }
 
 fn ps_c_free_gb(session: &ssh::Session) -> Option<f64> {
-    let cmd = "powershell -NoProfile -Command \"(Get-PSDrive C).Free / 1GB\"";
-    let (out, code) = ssh::exec_with_exit(session, cmd).ok()?;
+    let (out, code) = ssh::exec_ps_windows(session, "(Get-PSDrive C).Free / 1GB").ok()?;
     if code != 0 {
         return None;
     }

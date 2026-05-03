@@ -101,6 +101,35 @@ pub fn exec_with_exit(session: &Session, cmd: &str) -> Result<(String, i32)> {
     Ok((text, code))
 }
 
+/// Run a PowerShell script on a Windows guest via the existing ssh transport.
+/// Encodes the script as UTF-16LE+Base64 (so braces, quotes, and unicode
+/// survive shell quoting) and strips PowerShell's CLIXML envelope from the
+/// combined output — that XML blob is purely an artifact of PowerShell
+/// detecting a non-interactive ssh and folding info/progress streams onto
+/// stderr; humans never want to see it.
+pub fn exec_ps_windows(session: &Session, script: &str) -> Result<(String, i32)> {
+    use base64::Engine;
+    let utf16: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|c| c.to_le_bytes())
+        .collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16);
+    let cmd = format!("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}");
+    let (out, code) = exec_with_exit(session, &cmd)?;
+    Ok((strip_clixml(&out), code))
+}
+
+/// Strip PowerShell's CLIXML envelope (a single `#< CLIXML\n<Objs ...>...</Objs>`
+/// block) from combined stdout/stderr. The envelope only ever appears once
+/// per invocation and contains nothing a human reader cares about, so we cut
+/// from the marker to end-of-string.
+fn strip_clixml(s: &str) -> String {
+    match s.find("#< CLIXML") {
+        Some(i) => s[..i].trim_end().to_string(),
+        None => s.to_string(),
+    }
+}
+
 /// Run a command via the `ssh` CLI subprocess so stdout/stderr stream live
 /// to the user's terminal — `output()` blocks until completion, which makes
 /// long ops like `cargo build` go silent for 10+ minutes. Returns the exit
