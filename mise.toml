@@ -26,3 +26,51 @@ run = "cargo run -- {{arg(name='args', var=true, help='arguments to pass to utm-
 [tasks.install]
 description = "install utm-dev binary to ~/.cargo/bin"
 run = "cargo install --path ."
+
+# ── e2e smoke tests ───────────────────────────────────────────────────────────
+# Fast regression check — exercises the paths we've actually rewritten:
+# ssh CLI subprocess, vm clean module, vm doctor module, mac native build,
+# mise.toml respect, ProjectKind detection. Skips the 18-min cross-compile
+# (manual dogfood for that). Total: ~30 sec when host binary is up to date.
+#
+# Run all:    mise run e2e:smoke
+# Run one:    mise run e2e:doctor   (or e2e:clean-dry, e2e:mac)
+
+[tasks."e2e:doctor"]
+description = "smoke: vm doctor on windows-build (ssh subprocess + doctor module)"
+shell = "nu -c"
+run = "cargo run --release -- vm doctor --name windows-build"
+
+[tasks."e2e:clean-dry"]
+description = "smoke: vm clean --dry-run (ssh subprocess + clean module + UTF-8-lossy)"
+shell = "nu -c"
+run = "cargo run --release -- vm clean --name windows-build --dry-run"
+
+[tasks."e2e:mac"]
+description = "smoke: native mac build + run (mise.toml respect + ProjectKind=Cargo + cargo wiring)"
+shell = "nu -c"
+run = """
+cargo run --release -- mac build --release
+^./.build/macos/arm64/utm-dev --version
+print "✓ mac build+run"
+"""
+
+[tasks."e2e:demo-mac"]
+description = "smoke: Tauri path via utm-dev-demo (ProjectKind=Tauri). Skips if not cloned as ../utm-dev-demo (override with UTM_DEV_DEMO_PATH)."
+shell = "nu -c"
+run = """
+let demo = ($env.UTM_DEV_DEMO_PATH? | default "../utm-dev-demo")
+if not ($demo | path exists) {
+  print $"  (skip) ($demo) not present — clone https://github.com/joeblew999/utm-dev-demo or set UTM_DEV_DEMO_PATH"
+  return
+}
+cargo build --release
+let utm_dev = (pwd | path join "target/release/utm-dev")
+cd $demo
+^$utm_dev mac build --release
+print "✓ tauri mac build via utm-dev"
+"""
+
+[tasks."e2e:smoke"]
+description = "all e2e smoke tests — pre-push regression check (~30 sec when warm; demo-mac skips if not cloned)"
+depends = ["e2e:doctor", "e2e:clean-dry", "e2e:mac", "e2e:demo-mac"]
