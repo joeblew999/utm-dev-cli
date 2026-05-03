@@ -1,103 +1,103 @@
-/// SSH helpers using libssh2 — replaces the sshpass subprocess approach from TypeScript.
+//! SSH helpers — all operations shell out to the host's `ssh` / `scp` CLI.
+//!
+//! Why not libssh2 (the `ssh2` crate)?
+//!   - On Windows targets, ssh2 + `vendored-openssl` builds OpenSSL from
+//!     source via openssl-src, which requires perl on the build VM. We
+//!     don't want perl on a build VM.
+//!   - Every host that runs utm-dev (macOS Apple Silicon) ships OpenSSH.
+//!     Every Vagrant box utm-dev imports also ships OpenSSH.
+//!   - We already shelled out to `ssh` for `exec_streaming` (libssh2's
+//!     read_to_string blocks long compiles). One transport everywhere.
+//!
+//! `Session` is a cheap handle — no persistent connection. Each operation
+//! spawns its own ssh subprocess. The host's ssh-agent and `~/.ssh/id_*`
+//! provide auth, same as the existing `exec_streaming` path. `BatchMode=yes`
+//! ensures we never block waiting for an interactive password prompt.
 use anyhow::{Context, Result};
-use ssh2::Session;
-use std::io::Read;
-use std::net::TcpStream;
-use std::time::Duration;
+use std::process::Command;
 
-use super::profiles::VmProfile;
+use super::profiles::{GuestOs, VmProfile};
 
+/// Cheap connection handle. Owns a `VmProfile` clone so it lives independently
+/// of whatever loaned it the profile. No TCP/SSH state inside — every call
+/// spawns its own `ssh` subprocess.
+#[derive(Clone)]
+pub struct Session {
+    profile: VmProfile,
+}
+
+/// "Connect" by running an `ssh ... echo ok` health check. Returns a
+/// `Session` if the host reaches the VM and auth succeeds. No persistent
+/// connection is held — the Session is just a typed bag of profile info.
 pub fn connect(profile: &VmProfile) -> Result<Session> {
-    let addr = format!("127.0.0.1:{}", profile.ssh_port);
-    let tcp = TcpStream::connect_timeout(
-        &addr.parse().context("parsing SSH addr")?,
-        Duration::from_secs(5),
-    )
-    .with_context(|| format!("TCP connect to {addr}"))?;
-
-    let mut sess = Session::new().context("creating SSH session")?;
-    sess.set_tcp_stream(tcp);
-    sess.handshake().context("SSH handshake")?;
-
-    // Try auth methods in order: agent → key files → password
-    if try_agent(&mut sess, profile.user).is_ok() {
-        return Ok(sess);
+    let sess = Session { profile: profile.clone() };
+    let (out, code) = exec_with_exit(&sess, "echo ok")?;
+    if code != 0 || !out.contains("ok") {
+        anyhow::bail!(
+            "SSH not reachable on port {} (user {}). Run: utm-dev vm up --name {}\n  ssh said: {}",
+            profile.ssh_port,
+            profile.user,
+            profile.name,
+            out
+        );
     }
-    if try_key_files(&mut sess, profile.user).is_ok() {
-        return Ok(sess);
-    }
-    if !profile.pass.is_empty() {
-        sess.userauth_password(profile.user, profile.pass)
-            .context("SSH password auth")?;
-        return Ok(sess);
-    }
-
-    anyhow::bail!(
-        "All SSH auth methods failed for {}@127.0.0.1:{}",
-        profile.user,
-        profile.ssh_port
-    )
+    Ok(sess)
 }
 
-fn try_agent(sess: &mut Session, user: &str) -> Result<()> {
-    let mut agent = sess.agent().context("opening SSH agent")?;
-    agent.connect().context("connecting to SSH agent")?;
-    agent.list_identities().context("listing agent identities")?;
-    for identity in agent.identities()? {
-        if agent.userauth(user, &identity).is_ok() && sess.authenticated() {
-            return Ok(());
-        }
-    }
-    anyhow::bail!("agent auth failed")
+/// Reachability check — used by callers that want a clear error before
+/// doing further work. Same as `connect()` but discards the handle.
+pub fn check(profile: &VmProfile) -> Result<()> {
+    connect(profile).map(|_| ())
 }
 
-fn try_key_files(sess: &mut Session, user: &str) -> Result<()> {
-    let home = dirs::home_dir().context("no home dir")?;
-    let candidates = [
-        home.join(".ssh").join("id_ed25519"),
-        home.join(".ssh").join("id_rsa"),
-        home.join(".ssh").join("id_ecdsa"),
-    ];
-    for privkey in &candidates {
-        if !privkey.exists() {
-            continue;
-        }
-        let pubkey = privkey.with_extension("pub");
-        let pub_opt = if pubkey.exists() { Some(pubkey.as_path()) } else { None };
-        if sess
-            .userauth_pubkey_file(user, pub_opt, privkey, None)
-            .is_ok()
-            && sess.authenticated()
-        {
-            return Ok(());
-        }
-    }
-    anyhow::bail!("key file auth failed")
-}
-
+/// Run a command and return its stdout+stderr as a single trimmed string.
 pub fn exec(session: &Session, cmd: &str) -> Result<String> {
-    let mut channel = session.channel_session().context("opening SSH channel")?;
-    channel.exec(cmd).with_context(|| format!("exec: {cmd}"))?;
-    let mut output = String::new();
-    channel.read_to_string(&mut output).context("reading SSH output")?;
-    channel.wait_close().context("waiting for channel close")?;
-    Ok(output.trim().to_string())
+    let (out, _) = exec_with_exit(session, cmd)?;
+    Ok(out)
 }
 
+/// Run a command and return (combined stdout+stderr, exit code).
+///
+/// Output bytes are converted with `from_utf8_lossy` because Windows tools
+/// (DISM, Get-Content, mise console) emit in the local codepage or UTF-16,
+/// neither of which is valid UTF-8. Lossy conversion replaces invalid bytes
+/// with U+FFFD; strict from_utf8 would bail and the caller sees nothing.
 pub fn exec_with_exit(session: &Session, cmd: &str) -> Result<(String, i32)> {
-    let mut channel = session.channel_session().context("opening SSH channel")?;
-    channel.exec(cmd).with_context(|| format!("exec: {cmd}"))?;
-    let mut output = String::new();
-    channel.read_to_string(&mut output).context("reading SSH output")?;
-    channel.wait_close().context("waiting for channel close")?;
-    let exit_code = channel.exit_status().unwrap_or(1);
-    Ok((output.trim().to_string(), exit_code))
+    let p = &session.profile;
+    let target   = format!("{}@localhost", p.user);
+    let port_str = p.ssh_port.to_string();
+    let output = Command::new("ssh")
+        .args([
+            "-p", &port_str,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-o", "BatchMode=yes",
+        ])
+        .arg(&target)
+        .arg(cmd)
+        .output()
+        .with_context(|| format!("spawning ssh subprocess for: {cmd}"))?;
+
+    // Combine stdout + stderr — many tools (mise, dism, cargo) write progress
+    // to stderr but errors we care about. Callers can't inspect them
+    // separately anyway with this API.
+    let mut combined = output.stdout;
+    if !output.stderr.is_empty() {
+        if !combined.is_empty() && !combined.ends_with(b"\n") {
+            combined.push(b'\n');
+        }
+        combined.extend_from_slice(&output.stderr);
+    }
+    let text = String::from_utf8_lossy(&combined).trim().to_string();
+    let code = output.status.code().unwrap_or(1);
+    Ok((text, code))
 }
 
 /// Run a command via the `ssh` CLI subprocess so stdout/stderr stream live
-/// to the user's terminal (libssh2's read_to_string blocks until completion,
-/// which makes long ops like `cargo build` go silent for 10+ minutes).
-/// Returns the exit code.
+/// to the user's terminal — `output()` blocks until completion, which makes
+/// long ops like `cargo build` go silent for 10+ minutes. Returns the exit
+/// code.
 pub fn exec_streaming(profile: &VmProfile, cmd: &str) -> Result<i32> {
     let target = format!("{}@localhost", profile.user);
     // -tt forces a pseudo-TTY which keeps remote stdout line-buffered on
@@ -114,10 +114,10 @@ pub fn exec_streaming(profile: &VmProfile, cmd: &str) -> Result<i32> {
         "-o", "LogLevel=ERROR",
         "-o", "BatchMode=yes",
     ];
-    if profile.os == super::profiles::GuestOs::Linux {
+    if profile.os == GuestOs::Linux {
         args.insert(0, "-tt");
     }
-    let status = std::process::Command::new("ssh")
+    let status = Command::new("ssh")
         .args(&args)
         .arg(&target)
         .arg(cmd)
@@ -126,9 +126,7 @@ pub fn exec_streaming(profile: &VmProfile, cmd: &str) -> Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
-/// Upload a local file to the VM. Shells out to `scp` because libssh2's
-/// scp_send is unreliable against Windows OpenSSH (relative dest paths
-/// silently no-op).
+/// Upload a local file to the VM via `scp`.
 pub fn upload(profile: &VmProfile, local: &std::path::Path, remote_path: &str) -> Result<()> {
     scp(
         profile,
@@ -147,7 +145,7 @@ pub fn download(profile: &VmProfile, remote_path: &str, local: &std::path::Path)
 }
 
 fn scp(profile: &VmProfile, src: &str, dst: &str) -> Result<()> {
-    let status = std::process::Command::new("scp")
+    let status = Command::new("scp")
         .args([
             "-P", &profile.ssh_port.to_string(),
             "-o", "StrictHostKeyChecking=no",
@@ -160,24 +158,6 @@ fn scp(profile: &VmProfile, src: &str, dst: &str) -> Result<()> {
         .context("spawning scp")?;
     if !status.success() {
         anyhow::bail!("scp {} -> {} exited {}", src, dst, status);
-    }
-    Ok(())
-}
-
-/// Check SSH is reachable — exit 1 with a helpful message if not.
-pub fn check(profile: &VmProfile) -> Result<()> {
-    let sess = connect(profile).with_context(|| {
-        format!(
-            "Cannot connect via SSH on port {}. Run: utm-dev vm up --name {}",
-            profile.ssh_port, profile.name
-        )
-    })?;
-    let out = exec(&sess, "echo ok")?;
-    if !out.contains("ok") {
-        anyhow::bail!(
-            "SSH connected but echo test failed on port {}",
-            profile.ssh_port
-        );
     }
     Ok(())
 }

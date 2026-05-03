@@ -19,8 +19,7 @@ serde      = { version = "1",    features = ["derive"] }
 serde_json = "1"
 anyhow     = "1"
 dirs       = "6"
-ssh2       = { version = "0.9", features = ["vendored-openssl"] }
-reqwest    = { version = "0.12", features = ["blocking"] }
+ureq       = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "gzip"] }
 indicatif  = "0.17"
 tar        = "0.4"
 flate2     = "1"

@@ -207,7 +207,7 @@ Honest status as of the plain-cargo extension landing:
 | Layer | Status | Notes |
 |---|---|---|
 | Code compiles | ✓ | `cargo build --release` clean |
-| Existing Tauri code path | ✓ — untouched | All original code retained verbatim; `ProjectKind::Tauri` branch identical to pre-change behavior. `joeblew999/ifc-lite` continues to build as before. |
+| Existing Tauri code path | ✓ — untouched | All original code retained verbatim; `ProjectKind::Tauri` branch identical to pre-change behavior. The reference Tauri test target is [`joeblew999/utm-dev-demo`](https://github.com/joeblew999/utm-dev-demo) (small, deliberately minimal). |
 | `ProjectKind` detection | ✓ — confirmed live | Ran `utm-dev windows build --release` against this very repo; first line of output is `→ Project kind: cargo`. The dispatch correctly classifies utm-dev-cli (no `src-tauri/`) as plain cargo. |
 | Pre-flight (`mise.toml` requirements per kind) | ✓ — code path proven by dispatch | Plain cargo only requires `rust`; Tauri requires `rust + cargo:tauri-cli`. |
 | Plain-cargo `cargo build` step end-to-end | ✗ — **not yet reached** in real run | The dogfood test against utm-dev-cli itself failed at the **`mise install` step inside the VM** with a pre-existing PowerShell quoting issue (`MissingEndCurlyBrace`). This is unrelated to the plain-cargo extension — same bug exists for Tauri builds on a fresh windows-build VM. The cargo build branch wasn't reached. See [GAPS.md](GAPS.md). |
@@ -240,8 +240,21 @@ If that produces a runnable `utm-dev.exe` (you can verify by `vm push`-ing
 it to a separate Windows-test VM and running it), the plain-cargo path is
 verified end-to-end on your machine.
 
-For Tauri-path verification, use any Tauri project — `joeblew999/ifc-lite`
-is the reference.
+For Tauri-path verification, use the reference test repo
+[`joeblew999/utm-dev-demo`](https://github.com/joeblew999/utm-dev-demo)
+— a deliberately small Tauri app kept minimal so the VM doesn't fill up
+with unrelated weight while you're shaking out the build pipeline:
+
+```sh
+git clone https://github.com/joeblew999/utm-dev-demo.git
+cd utm-dev-demo
+utm-dev windows build --release
+```
+
+If the C: drive on the VM fills up between runs (Windows VMs have a
+small system partition), `utm-dev vm clean --name windows-build`
+reports what's eating disk and clears safe categories; add `--deep`
+to also nuke cargo target/registry caches that take longer to rebuild.
 
 ## License
 

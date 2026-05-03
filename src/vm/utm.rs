@@ -176,13 +176,14 @@ pub fn wait_for_boot(profile: &VmProfile, timeout_secs: u64) -> Result<()> {
 fn wait_for_winrm(port: u16, timeout_secs: u64) -> Result<()> {
     println!("→ Waiting for Windows to boot (up to {}m)...", timeout_secs / 60);
     let url = format!("http://127.0.0.1:{}/wsman", port);
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(3)))
+        .build()
+        .into();
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let mut elapsed = 0u64;
     while Instant::now() < deadline {
-        if client.get(&url).send().is_ok() {
+        if agent.get(&url).call().is_ok() {
             println!("✓ Windows ready ({}s)", elapsed);
             return Ok(());
         }

@@ -1,8 +1,10 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::Subcommand;
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::cli::BuildTarget;
+use crate::vm::build::{detect_project_kind, cargo_package_name, ProjectKind};
 
 // Matches setup.ts constants
 const NDK_VERSION:   &str = "27.2.12479018";
@@ -14,8 +16,16 @@ const JAVA_VERSION:  &str = "temurin-17.0.18+8";
 pub enum MacCommands {
     /// Run macOS desktop app with hot reload
     Dev,
-    /// Build macOS .app and .dmg
-    Build,
+    /// Build macOS binary natively (no VM — cargo runs on the host).
+    /// Tauri projects produce .app/.dmg bundles; plain cargo projects
+    /// produce a single binary at `.build/macos/<arch>/<name>`.
+    Build {
+        #[arg(long, value_enum, default_value_t = BuildTarget::Arm64,
+              help = "Architecture: arm64 (default Apple Silicon) | x86-64 (Intel) | both")]
+        target: BuildTarget,
+        #[arg(long, help = "Optimised release build")]
+        release: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -74,9 +84,132 @@ pub enum AllCommands {
 
 pub fn run_mac(cmd: MacCommands) -> Result<()> {
     match cmd {
-        MacCommands::Dev   => tauri(&["dev"]),
-        MacCommands::Build => tauri(&["build"]),
+        MacCommands::Dev => tauri(&["dev"]),
+        MacCommands::Build { target, release } => mac_build(target, release),
     }
+}
+
+/// Native macOS build. No VM — cargo runs on the host. Mirrors the
+/// `windows build` / `linux build` surface (same flags, same output dir
+/// shape under `.build/macos/<arch>/`) so callers can treat all three
+/// targets uniformly.
+///
+/// Respects the target project's `mise.toml`: if present and `mise` is
+/// on PATH, runs `mise install` first to ensure pinned tools are
+/// available, then invokes cargo via `mise exec --` so the project's
+/// pinned rust version / sccache / etc. are honored. Mirrors the
+/// VM-side build, which already does `mise exec -- cargo build` inside
+/// the guest.
+fn mac_build(target: BuildTarget, release: bool) -> Result<()> {
+    let project_dir = std::env::current_dir().context("cwd")?;
+    let kind = detect_project_kind(&project_dir);
+
+    // Honour the project's mise.toml — install pinned tools (idempotent)
+    // before any cargo invocation runs. Skip gracefully if no mise.toml
+    // or mise isn't installed on the host.
+    let has_mise_toml = ["mise.toml", ".mise.toml"]
+        .iter().any(|f| project_dir.join(f).exists());
+    let mise_on_path = which::which("mise").is_ok();
+    let use_mise = has_mise_toml && mise_on_path;
+    if use_mise {
+        println!("→ Running mise install (project mise.toml detected)...");
+        let status = Command::new("mise")
+            .arg("install")
+            .current_dir(&project_dir)
+            .status()
+            .map_err(|e| anyhow::anyhow!("failed to run mise install: {e}"))?;
+        if !status.success() {
+            bail!("mise install exited with {}", status);
+        }
+    } else if has_mise_toml && !mise_on_path {
+        println!("⚠ project has mise.toml but `mise` is not on PATH — using host cargo directly.");
+    }
+
+    let triples: Vec<(&str, &str)> = match target {
+        BuildTarget::Arm64 => vec![("arm64",  "aarch64-apple-darwin")],
+        BuildTarget::X8664 => vec![("x86_64", "x86_64-apple-darwin")],
+        BuildTarget::Both  => vec![("arm64",  "aarch64-apple-darwin"),
+                                   ("x86_64", "x86_64-apple-darwin")],
+    };
+
+    let kind_label = match kind { ProjectKind::Tauri => "Tauri", ProjectKind::Cargo => "cargo" };
+    let mode_label = if release { "release" } else { "debug" };
+    let via_label  = if use_mise { "mise" } else { "cargo direct" };
+    println!("→ Project kind: {kind_label} | mode: {mode_label} | via: {via_label}");
+
+    let artifacts_dir = project_dir.join(".build").join("macos");
+    std::fs::create_dir_all(&artifacts_dir).ok();
+
+    for (arch, triple) in &triples {
+        println!("\n── Target: {triple} ──");
+        match kind {
+            ProjectKind::Tauri => {
+                let mut args: Vec<&str> = vec!["tauri", "build", "--target", triple];
+                if !release { args.push("--debug"); }
+                run_cargo(&args, use_mise, &project_dir)?;
+                // Tauri leaves output at:
+                //   <project>/src-tauri/target/<triple>/release/bundle/{macos,dmg}/...
+                // We don't copy — Tauri's bundle layout is rich (.app + .dmg) and
+                // moving it would break things. Just print the canonical location.
+                let bundle = project_dir
+                    .join("src-tauri").join("target").join(triple).join(mode_label).join("bundle");
+                if bundle.exists() {
+                    println!("  ✓ bundle: {}", bundle.display());
+                }
+            }
+            ProjectKind::Cargo => {
+                let mut args: Vec<&str> = vec!["build", "--target", triple];
+                if release { args.push("--release"); }
+                run_cargo(&args, use_mise, &project_dir)?;
+                let pkg_name = cargo_package_name(&project_dir)?;
+                let src: PathBuf = project_dir
+                    .join("target").join(triple).join(mode_label).join(&pkg_name);
+                if !src.exists() {
+                    bail!("expected binary not found: {}", src.display());
+                }
+                let arch_dir = artifacts_dir.join(arch);
+                std::fs::create_dir_all(&arch_dir)?;
+                let dst = arch_dir.join(&pkg_name);
+                std::fs::copy(&src, &dst)
+                    .with_context(|| format!("copy {} -> {}", src.display(), dst.display()))?;
+                let size = std::fs::metadata(&dst)?.len();
+                println!("  ✓ {} ({:.1} MB)", dst.display(), size as f64 / 1_048_576.0);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Run cargo, optionally through `mise exec --` so the target project's
+/// pinned tools are honored. `cwd` is set to `project_dir` so cargo finds
+/// the right Cargo.toml regardless of where utm-dev was invoked from.
+fn run_cargo(args: &[&str], use_mise: bool, project_dir: &std::path::Path) -> Result<()> {
+    let mut cmd = if use_mise {
+        let mut c = Command::new("mise");
+        c.arg("exec").arg("--").arg("cargo").args(args);
+        c
+    } else {
+        let mut c = Command::new("cargo");
+        c.args(args);
+        c
+    };
+    cmd.current_dir(project_dir);
+    let status = cmd.status().map_err(|e| {
+        anyhow::anyhow!(
+            "failed to spawn {}{}: {e}",
+            if use_mise { "mise exec -- cargo " } else { "cargo " },
+            args.join(" ")
+        )
+    })?;
+    if !status.success() {
+        bail!(
+            "{}{} exited with {}",
+            if use_mise { "mise exec -- cargo " } else { "cargo " },
+            args.join(" "),
+            status
+        );
+    }
+    Ok(())
 }
 
 pub fn run_ios(cmd: IosCommands) -> Result<()> {

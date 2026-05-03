@@ -23,7 +23,7 @@ pub enum ProjectKind {
     Cargo,  // plain Rust — produces a single binary at target/<triple>/release/<name>
 }
 
-fn detect_project_kind(project_dir: &Path) -> ProjectKind {
+pub fn detect_project_kind(project_dir: &Path) -> ProjectKind {
     if project_dir.join("src-tauri").is_dir()
         || project_dir.join("src-tauri").join("tauri.conf.json").is_file()
     {
@@ -36,7 +36,7 @@ fn detect_project_kind(project_dir: &Path) -> ProjectKind {
 /// Extract `[package].name` from Cargo.toml. Used to know what binary file
 /// to pull back for plain cargo projects. Substring-grep approach (no toml
 /// crate dep) — same shape as preflight_mise_toml.
-fn cargo_package_name(project_dir: &Path) -> Result<String> {
+pub fn cargo_package_name(project_dir: &Path) -> Result<String> {
     let path = project_dir.join("Cargo.toml");
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("reading {}", path.display()))?;
@@ -280,11 +280,14 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
         // toolchain has no linker. We pivot the entire build to x64 and
         // run under Windows ARM64's native x64 emulation. The .msi/.exe
         // produced are x86_64 — what most Windows users actually ship.
-        // switch_rustup is one PS one-liner. Keep `if` body single-statement
-        // to avoid `{ ... }` blocks — cmd.exe quirks with embedded braces
-        // inside multi-`&&` chains have caused MissingEndCurlyBrace parse
-        // errors in the past. Two separate PS calls, sequenced by &&.
-        let switch_rustup = r#"powershell -NoProfile -Command "$r = (& mise where rust); if (Test-Path ($r + '\\rustup.exe')) { & ($r + '\\rustup.exe') set default-host x86_64-pc-windows-msvc }" && powershell -NoProfile -Command "$r = (& mise where rust); if (Test-Path ($r + '\\rustup.exe')) { & ($r + '\\rustup.exe') default --force-non-host stable-x86_64-pc-windows-msvc }""#;
+        // switch_rustup runs both rustup commands inside ONE PowerShell call,
+        // semicolon-chained, with a single { ... } block. Earlier this was
+        // two separate `powershell -Command "..."` calls joined by cmd's
+        // `&&` — that broke with MissingEndCurlyBrace because cmd.exe got
+        // confused by the back-to-back closing-brace + closing-quote +
+        // chain operator (`}"&&powershell ...`). One PS call sidesteps the
+        // cmd quote handoff entirely.
+        let switch_rustup = r#"powershell -NoProfile -Command "$r = (& mise where rust); if (Test-Path ($r + '\\rustup.exe')) { & ($r + '\\rustup.exe') set default-host x86_64-pc-windows-msvc; & ($r + '\\rustup.exe') default --force-non-host stable-x86_64-pc-windows-msvc }""#;
         // sccache install is best-effort — not blocking the build chain.
         // Plain `||` with no echo arg avoids cmd.exe's grouping confusion
         // around `(...)` in echo args.
@@ -459,8 +462,16 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
                 let bin_path = format!("{target_root}{sep}{triple}{sep}release{sep}{bin_filename}");
                 println!("  binary path: {bin_path}");
 
+                // scp through ssh CLI eats Windows backslashes during shell
+                // expansion. Windows accepts forward slashes in paths natively,
+                // so swap them for the scp leg only — display path stays native.
+                let scp_path = if profile.os == GuestOs::Windows {
+                    bin_path.replace('\\', "/")
+                } else {
+                    bin_path.clone()
+                };
                 let local_bin = arch_dir.join(&bin_filename);
-                ssh::download(profile, &bin_path, &local_bin)?;
+                ssh::download(profile, &scp_path, &local_bin)?;
                 let size = std::fs::metadata(&local_bin)?.len();
                 println!("  {} ({:.1} MB)", local_bin.display(), size as f64 / 1_048_576.0);
             }
@@ -481,7 +492,7 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
 /// Plain cargo builds use ssh::download for a single binary file directly.
 fn pull_dir(
     profile: &VmProfile,
-    session: &ssh2::Session,
+    session: &ssh::Session,
     remote_dir: &str,
     local_dir: &Path,
     triple: &str,
@@ -630,7 +641,7 @@ fn linux_cross_env_for(triple: &str) -> String {
 /// Enable Debian multiarch (amd64 architecture in dpkg) and install the
 /// :amd64 system libraries Tauri/WebKitGTK needs to cross-link x86_64
 /// binaries from an ARM64 host. Idempotent — checks before installing.
-fn ensure_linux_multiarch(profile: &VmProfile, session: &ssh2::Session) -> Result<()> {
+fn ensure_linux_multiarch(profile: &VmProfile, session: &ssh::Session) -> Result<()> {
     println!("→ Ensuring Linux multiarch (amd64) deps...");
 
     // Check sentinel package first; bail early if already installed.

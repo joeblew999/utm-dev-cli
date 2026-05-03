@@ -15,20 +15,21 @@ pub struct CmdResult {
 }
 
 pub struct WinRM {
-    url:    String,
-    auth:   String,
-    client: reqwest::blocking::Client,
+    url:   String,
+    auth:  String,
+    agent: ureq::Agent,
 }
 
 impl WinRM {
     pub fn new(host: &str, port: u16, user: &str, pass: &str) -> Result<Self> {
-        let url    = format!("http://{host}:{port}/wsman");
-        let creds  = format!("{user}:{pass}");
-        let auth   = base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(600))
-            .build()?;
-        Ok(Self { url, auth, client })
+        let url   = format!("http://{host}:{port}/wsman");
+        let creds = format!("{user}:{pass}");
+        let auth  = base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(600)))
+            .build()
+            .into();
+        Ok(Self { url, auth, agent })
     }
 
     // ── SOAP envelope ────────────────────────────────────────────────────────
@@ -64,20 +65,19 @@ impl WinRM {
     }
 
     fn request(&self, xml: &str) -> Result<String> {
-        let resp = self.client
+        let resp = self.agent
             .post(&self.url)
             .header("Content-Type", "application/soap+xml;charset=UTF-8")
-            .header("Authorization", format!("Basic {}", self.auth))
-            .body(xml.to_string())
-            .send()
+            .header("Authorization", &format!("Basic {}", self.auth))
+            .send(xml)
             .context("WinRM HTTP request")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text   = resp.text().unwrap_or_default();
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.into_body().read_to_string().unwrap_or_default();
             let snippet = &text[..text.len().min(400)];
             bail!("WinRM HTTP {status}: {snippet}");
         }
-        resp.text().context("reading WinRM response")
+        resp.into_body().read_to_string().context("reading WinRM response")
     }
 
     // ── Shell lifecycle ──────────────────────────────────────────────────────
@@ -271,11 +271,11 @@ Start-ScheduledTask -TaskName 'BootstrapStep'
 
     /// Cheap reachability probe — tries a GET (any HTTP response = WinRM is up).
     pub fn ping(&self) -> bool {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(3))
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(3)))
             .build()
-            .unwrap();
-        client.get(&self.url).send().is_ok()
+            .into();
+        agent.get(&self.url).call().is_ok()
     }
 }
 

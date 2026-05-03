@@ -18,7 +18,7 @@ pub fn run(profile: &VmProfile) -> Result<()> {
 
 // ── Linux bootstrap ───────────────────────────────────────────────────────────
 
-fn linux(session: &ssh2::Session, profile: &VmProfile) -> Result<()> {
+fn linux(session: &ssh::Session, profile: &VmProfile) -> Result<()> {
     println!("→ Bootstrapping Linux VM (mode: {:?})...", profile.bootstrap);
 
     // Install host's public key so the user can `code --remote ssh-remote+...`
@@ -144,7 +144,7 @@ fn linux(session: &ssh2::Session, profile: &VmProfile) -> Result<()> {
     Ok(())
 }
 
-fn run_step(session: &ssh2::Session, label: &str, cmd: &str) -> Result<()> {
+fn run_step(session: &ssh::Session, label: &str, cmd: &str) -> Result<()> {
     print!("  {label}...");
     let _ = std::io::Write::flush(&mut std::io::stdout());
     let (out, code) = ssh::exec_with_exit(session, cmd)?;
@@ -157,7 +157,7 @@ fn run_step(session: &ssh2::Session, label: &str, cmd: &str) -> Result<()> {
     Ok(())
 }
 
-fn install_host_pubkey(session: &ssh2::Session) -> Result<()> {
+fn install_host_pubkey(session: &ssh::Session) -> Result<()> {
     let pub_key = match find_public_key() {
         Ok(k) => k,
         Err(_) => {
@@ -449,6 +449,38 @@ if ($rustup) {
 }
 "#)?;
         println!("  ✓ rustup default-host set to x86_64-pc-windows-msvc (ARM64 host workaround)");
+    }
+
+    // Step N: Windows Defender exclusions for cargo/mise/build paths.
+    //
+    // Why: Defender's real-time scan briefly locks freshly-written files
+    // during cargo extract/compile. The lock manifests as
+    // "The process cannot access the file because it is being used by
+    // another process" partway through `mise install` or `cargo build`.
+    // Adding exclusions for the build dirs eliminates this — standard
+    // practice across the Rust/JetBrains/Microsoft dev-VM ecosystem.
+    //
+    // Idempotent: Add-MpPreference no-ops if the path is already excluded.
+    let defender_ps = r#"
+$paths = @(
+  'D:\target',
+  "$env:USERPROFILE\.cargo",
+  "$env:USERPROFILE\.rustup",
+  "$env:USERPROFILE\.local\share\mise",
+  "$env:USERPROFILE\AppData\Local\mise",
+  "$env:USERPROFILE\.utm-dev-build"
+)
+foreach ($p in $paths) {
+  try { Add-MpPreference -ExclusionPath $p -ErrorAction Stop } catch { }
+}
+"#;
+    if w.run_elevated(defender_ps, 60).is_ok() {
+        println!("  ✓ Windows Defender exclusions added (cargo/rustup/mise/target)");
+    } else {
+        // Non-fatal — the build will still work, just slower and may hit
+        // intermittent file-lock errors. User can re-run `vm doctor` later
+        // or add exclusions manually.
+        println!("  ⚠ Defender exclusions skipped (Add-MpPreference failed — non-fatal)");
     }
 
     println!("✓ Windows bootstrap complete");

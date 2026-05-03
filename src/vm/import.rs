@@ -130,25 +130,31 @@ fn download_prebaked(profile: &VmProfile, url: &str) -> Result<PathBuf> {
         println!("  Resuming from {:.2} GB...", resume_from as f64 / 1_073_741_824.0);
     }
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(7200))
-        .build()?;
-    let mut req = client.get(url);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(7200)))
+        .build()
+        .into();
+    let mut req = agent.get(url);
     if resume_from > 0 {
-        req = req.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+        req = req.header("Range", &format!("bytes={resume_from}-"));
     }
-    let mut resp = req.send().with_context(|| format!("GET {url}"))?;
-    let status = resp.status();
-    let resumed = status == reqwest::StatusCode::PARTIAL_CONTENT;
-    if !status.is_success() {
-        bail!("pre-baked box download failed: HTTP {status}");
+    let resp = req.call().with_context(|| format!("GET {url}"))?;
+    let status_code = resp.status().as_u16();
+    let resumed = status_code == 206;
+    if !(200..300).contains(&status_code) {
+        bail!("pre-baked box download failed: HTTP {status_code}");
     }
     if resume_from > 0 && !resumed {
         println!("  (server doesn't support resume — starting from 0)");
     }
     let starting_offset = if resumed { resume_from } else { 0 };
-    let body_len = resp.content_length().unwrap_or(0);
+    let body_len: u64 = resp.headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     let total = starting_offset + body_len;
+    let mut body_reader = resp.into_body().into_reader();
 
     let pb = ProgressBar::new(total);
     pb.set_style(
@@ -171,7 +177,7 @@ fn download_prebaked(profile: &VmProfile, url: &str) -> Result<PathBuf> {
         .open(&partial)?;
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = resp.read(&mut buf)?;
+        let n = body_reader.read(&mut buf)?;
         if n == 0 { break; }
         file.write_all(&buf[..n])?;
         pb.inc(n as u64);
@@ -187,18 +193,20 @@ fn download_prebaked(profile: &VmProfile, url: &str) -> Result<PathBuf> {
 }
 
 fn download_box(profile: &VmProfile) -> Result<PathBuf> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into();
 
     // Step 1: get latest version from Vagrant Cloud
     println!("→ Fetching box version for {}...", profile.box_name);
     let versions_url = format!("{VAGRANT_API}/box/{}/versions", profile.box_name);
-    let versions_body = client
+    let versions_body = agent
         .get(&versions_url)
-        .send()
+        .call()
         .with_context(|| format!("GET {versions_url}"))?
-        .text()?;
+        .into_body()
+        .read_to_string()?;
     let box_version = versions_body
         .split("\"name\":\"")
         .nth(1)
@@ -230,11 +238,12 @@ fn download_box(profile: &VmProfile) -> Result<PathBuf> {
         "{VAGRANT_API}/box/{}/version/{box_version}/provider/utm/architecture/arm64/download",
         profile.box_name
     );
-    let download_body = client
+    let download_body = agent
         .get(&download_api)
-        .send()
+        .call()
         .with_context(|| format!("GET {download_api}"))?
-        .text()?;
+        .into_body()
+        .read_to_string()?;
     let box_url = download_body
         .split("\"url\":\"")
         .nth(1)
@@ -259,19 +268,20 @@ fn download_box(profile: &VmProfile) -> Result<PathBuf> {
         );
     }
 
-    let stream_client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(3600))
-        .build()?;
-    let mut req = stream_client.get(&box_url);
+    let stream_agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(3600)))
+        .build()
+        .into();
+    let mut req = stream_agent.get(&box_url);
     if resume_from > 0 {
-        req = req.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+        req = req.header("Range", &format!("bytes={resume_from}-"));
     }
-    let mut resp = req.send().with_context(|| format!("GET {box_url}"))?;
+    let resp = req.call().with_context(|| format!("GET {box_url}"))?;
 
-    let status = resp.status();
-    let resumed = status == reqwest::StatusCode::PARTIAL_CONTENT;
-    if !status.is_success() {
-        bail!("Download failed: HTTP {status}");
+    let status_code = resp.status().as_u16();
+    let resumed = status_code == 206;
+    if !(200..300).contains(&status_code) {
+        bail!("Download failed: HTTP {status_code}");
     }
     if resume_from > 0 && !resumed {
         // Server didn't honour Range — start over
@@ -279,8 +289,13 @@ fn download_box(profile: &VmProfile) -> Result<PathBuf> {
     }
     let starting_offset = if resumed { resume_from } else { 0 };
 
-    let body_len = resp.content_length().unwrap_or(0);
+    let body_len: u64 = resp.headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     let total = starting_offset + body_len;
+    let mut body_reader = resp.into_body().into_reader();
     let pb = ProgressBar::new(total);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -304,7 +319,7 @@ fn download_box(profile: &VmProfile) -> Result<PathBuf> {
 
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = resp.read(&mut buf)?;
+        let n = body_reader.read(&mut buf)?;
         if n == 0 {
             break;
         }
