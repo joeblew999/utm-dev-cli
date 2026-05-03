@@ -123,7 +123,7 @@ print "✓ utm-dev push + exec round-trip on the windows-build VM"
 '''
 
 [tasks."e2e:vm-run"]
-description = "smoke: exercise `utm-dev vm run` + `vm logs` end-to-end against the windows-build VM. Pushes utm-dev.exe (assumed already there from e2e:windows-run), launches it via vm run, then asserts the captured run.log contains the binary's startup output."
+description = "smoke: exercise `utm-dev vm run -- --version` + `vm logs` end-to-end. Pushes utm-dev.exe to the VM (via e2e:windows-run), launches it under `vm run` with --version, then asserts run.log contains the version line. Cleaner assertion than no-arg help-on-stderr."
 shell = "nu -c"
 depends = ["_e2e:build"]
 run = '''
@@ -133,26 +133,40 @@ if not ($exe | path exists) {
   return
 }
 let utm_dev = "./target/release/utm-dev"
-# vm run launches the binary detached; without args it prints help to stdout
-# which Start-Process redirects into ~/.utm-dev-run/run.log on the VM.
-^$utm_dev vm run --name windows-build --bin "C:\\Users\\vagrant\\utm-dev.exe"
+# Pass `--version` to the binary so it writes a deterministic line ("utm-dev 0.1.0")
+# to stdout. Without args utm-dev prints help to stderr (clap default), which
+# also works but is harder to assert against.
+^$utm_dev vm run --name windows-build --bin "C:\\Users\\vagrant\\utm-dev.exe" -- --version
 sleep 3sec
 let log = (^$utm_dev vm logs --name windows-build --kind run --tail 50 | decode utf-8 | str trim)
-if not ($log | str contains "utm-dev") {
-  print "  ✗ vm run captured no recognizable output"
+if not ($log | str contains "utm-dev 0.1") {
+  print "  ✗ vm run --version did not surface a recognizable version line"
   print $log
   exit 1
 }
 print "✓ utm-dev vm run + vm logs round-trip on the windows-build VM"
 '''
 
+[tasks."e2e:validate"]
+description = "smoke: pixel-diff self-comparison (golden = actual) → 100% match. Sanity test for the `utm-dev validate` command. No VM, no network."
+shell = "nu -c"
+depends = ["_e2e:build"]
+run = '''
+let out = (^./target/release/utm-dev validate --actual tests/fixtures/checker.png --golden tests/fixtures/checker.png | str trim)
+if not ($out | str contains "100.00%") {
+  print $"  ✗ self-comparison didn't match 100%: ($out)"
+  exit 1
+}
+print "✓ utm-dev validate self-comparison = 100%"
+'''
+
 [tasks."e2e:fast"]
-description = "host-only smoke (~25s) — quality + mac + demo-mac. No VM, no network. Run on every save."
-depends = ["rust:quality", "e2e:mac", "e2e:demo-mac"]
+description = "host-only smoke (~25s) — quality + validate + mac + demo-mac. No VM, no network. Run on every save."
+depends = ["rust:quality", "e2e:validate", "e2e:mac", "e2e:demo-mac"]
 
 [tasks."e2e:smoke"]
-description = "pre-push smoke (~50s) — quality + all VM tasks EXCEPT e2e:clean-dry (which scans the WU cache and takes 140s solo). Run e2e:clean-dry by hand or use e2e:smoke-full when working on vm clean."
-depends = ["rust:quality", "e2e:doctor", "e2e:mac", "e2e:demo-mac", "e2e:windows-run", "e2e:vm-run"]
+description = "pre-push smoke (~50s) — quality + validate + all VM tasks EXCEPT e2e:clean-dry (which scans the WU cache and takes 140s solo). Run e2e:clean-dry by hand or use e2e:smoke-full when working on vm clean."
+depends = ["rust:quality", "e2e:validate", "e2e:doctor", "e2e:mac", "e2e:demo-mac", "e2e:windows-run", "e2e:vm-run"]
 
 [tasks."e2e:smoke-full"]
 description = "the kitchen sink (~190s) — e2e:smoke + e2e:clean-dry. Use when you've touched src/cmd/vm/clean.rs or the scripts/clean/ payload. Otherwise use e2e:smoke."

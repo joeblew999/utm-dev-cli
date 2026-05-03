@@ -113,7 +113,7 @@ pub fn run(profile: &VmProfile, project_dir: &Path, target: BuildTarget) -> Resu
     let kind = detect_project_kind(project_dir);
     let kind_label = match kind {
         ProjectKind::Tauri => "Tauri",
-        ProjectKind::Cargo => "cargo",
+        ProjectKind::Cargo => "Cargo",
     };
     println!("→ Project kind: {kind_label}");
 

@@ -53,11 +53,21 @@ utm-dev vm down    --name windows-build
 utm-dev vm doctor  --name windows-build             # in-VM health checks
 utm-dev vm shell   --name windows-build             # interactive ssh
 utm-dev vm exec    --name windows-build -- "ver"    # run one command
+utm-dev vm run     --name X --bin foo.exe -- --version    # launch + capture stdout
 utm-dev vm push    --name X --from ./local --to /vm/path
 utm-dev vm pull    --name X --from /vm/path --to ./local
+utm-dev vm logs    --name X --kind run --tail 50    # tail captured stdout/stderr
 utm-dev vm clean   --name X                         # reclaim disk
 utm-dev vm package --name X                         # export as Vagrant .box
-utm-dev vm resize-disk --name X --plus-gb 30
+utm-dev vm resize-disk    --name X --plus-gb 30
+utm-dev vm refresh-network --name X                 # recover stale port forwards
+```
+
+UI regression on the host:
+
+```sh
+utm-dev screenshot --out app.png                          # capture Tauri WebView
+utm-dev validate --actual app.png --golden golden.png    # pixel-diff vs golden
 ```
 
 ## Pre-baked boxes

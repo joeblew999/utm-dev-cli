@@ -36,8 +36,9 @@ pub(super) fn run(profile: &VmProfile) -> Result<()> {
     let w = winrm::WinRM::new("127.0.0.1", port, profile.user, profile.pass)?;
     if !w.ping() {
         bail!(
-            "WinRM not reachable on port {port} — is the VM running and WinRM enabled?\n\
-             To enable WinRM manually, run in the VM: winrm quickconfig -force"
+            "WinRM not reachable on port {port} — is the VM running and WinRM enabled?\n  \
+             - Inside the VM: winrm quickconfig -force\n  \
+             - Stale host port-forward (post-restart): utm-dev vm refresh-network --name <profile>"
         );
     }
 

@@ -100,7 +100,7 @@ fn mac_build(target: BuildTarget, release: bool) -> Result<()> {
 
     let kind_label = match kind {
         ProjectKind::Tauri => "Tauri",
-        ProjectKind::Cargo => "cargo",
+        ProjectKind::Cargo => "Cargo",
     };
     let mode_label = if release { "release" } else { "debug" };
     let via_label = if use_mise { "mise" } else { "cargo direct" };

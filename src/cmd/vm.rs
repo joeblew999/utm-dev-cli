@@ -30,6 +30,14 @@ pub enum VmCommands {
         #[arg(long, help = "VM profile name")]
         name: String,
     },
+    /// Re-apply UTM port forwards (host→guest SSH/RDP/WinRM) on the configured
+    /// NIC. Stops the VM, sets the forwards, starts it again. Use when WinRM
+    /// or SSH stops being reachable on the host port after a VM/UTM restart.
+    /// (UTM only applies port-forward config changes on a cold boot.)
+    RefreshNetwork {
+        #[arg(long, help = "VM profile name")]
+        name: String,
+    },
     /// Clean transient state on the VM: build/run logs, temp files,
     /// installer leftovers, Windows Update cache, VS Package Cache, DISM
     /// component store. Reports per-category sizes BEFORE cleaning.
@@ -87,6 +95,10 @@ pub enum VmCommands {
         /// If omitted, auto-detects the most recent bundle for the host's arch.
         #[arg(long)]
         bin: Option<String>,
+        /// Args to pass to the binary. Use `--` to separate from utm-dev's own
+        /// flags, e.g. `vm run --name X --bin foo.exe -- --version --json`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Capture the VM's display and pull a PNG back to the host.
     /// Linux only for now (uses scrot against the xvfb display from `vm run`).
@@ -191,6 +203,7 @@ pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
             vm_down(&name)?;
             vm_up(&name)
         }
+        VmCommands::RefreshNetwork { name } => vm_refresh_network(&name),
         VmCommands::Clean {
             name,
             deep,
@@ -217,7 +230,7 @@ pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
             target,
             release,
         } => vm_build(&name, target, release),
-        VmCommands::Run { name, bin } => run::run(&name, bin.as_deref()),
+        VmCommands::Run { name, bin, args } => run::run(&name, bin.as_deref(), &args),
         VmCommands::Screenshot { name, out } => vm_screenshot(&name, &out),
         VmCommands::Delete { name } => vm_delete(&name),
         VmCommands::Package { name } => package::run(&name),
@@ -311,6 +324,35 @@ fn vm_up(name: &str) -> anyhow::Result<()> {
     bootstrap::run(profile)?;
 
     println!("✓ {} is up (UUID: {})", name, uuid);
+    Ok(())
+}
+
+// ── vm refresh-network ───────────────────────────────────────────────────────
+
+/// Recovery for GAPS #9 (WinRM/SSH port-forward fragility). UTM applies port-
+/// forward config changes only on cold boot, so a stale forward survives until
+/// we explicitly stop, reapply, and restart.
+fn vm_refresh_network(name: &str) -> anyhow::Result<()> {
+    let profile = profiles::get(name)?;
+    let st = state::load(name)
+        .map_err(|e| anyhow::anyhow!("no state for '{name}' — run `utm-dev vm up` first ({e})"))?;
+    println!("→ vm refresh-network on {name} (UUID {})", st.uuid);
+    utm::stop_vm(&st.display_name)?;
+    utm::configure_network(&st.uuid, profile)?;
+    utm::start_vm(&st.display_name)?;
+    utm::wait_for_boot(profile, 300)?;
+    println!(
+        "✓ network refreshed — host→guest forwards are now: SSH:{}{}{}",
+        profile.ssh_port,
+        profile
+            .rdp_port
+            .map(|p| format!(" RDP:{p}"))
+            .unwrap_or_default(),
+        profile
+            .winrm_port
+            .map(|p| format!(" WinRM:{p}"))
+            .unwrap_or_default(),
+    );
     Ok(())
 }
 

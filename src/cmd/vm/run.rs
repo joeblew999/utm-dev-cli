@@ -8,7 +8,7 @@
 
 use crate::vm::{profiles, ssh};
 
-pub fn run(name: &str, bin: Option<&str>) -> anyhow::Result<()> {
+pub fn run(name: &str, bin: Option<&str>, args: &[String]) -> anyhow::Result<()> {
     let profile = profiles::get(name)?;
     ssh::check(profile)?;
     let session = ssh::connect(profile)?;
@@ -22,6 +22,9 @@ pub fn run(name: &str, bin: Option<&str>) -> anyhow::Result<()> {
         }
     };
     println!("→ binary: {bin}");
+    if !args.is_empty() {
+        println!("→ args:   {}", args.join(" "));
+    }
 
     println!("→ Launching {bin} in {name} (output → ~/.utm-dev-run/run.log)...");
 
@@ -36,34 +39,61 @@ pub fn run(name: &str, bin: Option<&str>) -> anyhow::Result<()> {
         .unwrap_or(bin);
 
     let cmd = match profile.os {
-        profiles::GuestOs::Linux => format!(
-            // We start Xvfb on a fixed DISPLAY=:99, then a tiny WM
-            // (openbox) so windows actually get mapped, then the app.
-            // Without a WM, bare Xvfb produces a black screenshot —
-            // GTK windows open but aren't composited/mapped.
-            //
-            // setsid -f detaches from the SSH session's controlling terminal
-            // so SIGHUP doesn't kill the children. We invoke this command
-            // via `ssh` (no -tt) so the channel closes cleanly without
-            // delivering signals to the detached descendants.
-            //
-            // pkill <name> (NOT -f) — `pkill -f` matches the FULL command
-            // line including our own shell's argv, so `pkill -f Xvfb` kills
-            // the shell itself (exit 255, SSH dies). Plain pkill matches
-            // /proc/N/comm only, which is just the basename.
-            "mkdir -p ~/.utm-dev-run; pkill Xvfb 2>/dev/null; pkill openbox 2>/dev/null; pkill {bin_name} 2>/dev/null; sleep 1; setsid -f Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >~/.utm-dev-run/xvfb.log 2>&1; sleep 1; DISPLAY=:99 setsid -f openbox --replace >~/.utm-dev-run/openbox.log 2>&1 || true; sleep 1; DISPLAY=:99 setsid -f '{bin}' >~/.utm-dev-run/run.log 2>&1; sleep 3; pgrep Xvfb >/dev/null && echo 'Xvfb running' || echo 'Xvfb DEAD'; pgrep {bin_name} >/dev/null && echo 'app running' || echo 'app DEAD — see ~/.utm-dev-run/run.log'; true"
-        ),
-        profiles::GuestOs::Windows => format!(
-            // Start-Process detaches; redirect stdout/stderr to separate
-            // files so we can also surface stderr in vm logs.
-            //
-            // Single line (no `^` continuation): cmd's `^<nl>` line-join
-            // doesn't survive SSH delivery — the remote cmd sees literal
-            // `^\n` and treats `-Command` as parameter-less, producing
-            // PowerShell's help text. PowerShell's `;` works as a statement
-            // separator inside the -Command string; that's all we need.
-            r#"powershell -NoProfile -Command "$d='%USERPROFILE%\.utm-dev-run'; if (-not (Test-Path $d)) {{ New-Item -ItemType Directory -Path $d | Out-Null }}; $p = Start-Process -FilePath '{bin}' -RedirectStandardOutput ($d + '\\run.log') -RedirectStandardError ($d + '\\run.log.err') -PassThru; Write-Output ('PID=' + $p.Id)""#
-        ),
+        profiles::GuestOs::Linux => {
+            let args_sh = args
+                .iter()
+                .map(|a| sh_quote(a))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let args_suffix = if args_sh.is_empty() {
+                String::new()
+            } else {
+                format!(" {args_sh}")
+            };
+            format!(
+                // We start Xvfb on a fixed DISPLAY=:99, then a tiny WM
+                // (openbox) so windows actually get mapped, then the app.
+                // Without a WM, bare Xvfb produces a black screenshot —
+                // GTK windows open but aren't composited/mapped.
+                //
+                // setsid -f detaches from the SSH session's controlling terminal
+                // so SIGHUP doesn't kill the children. We invoke this command
+                // via `ssh` (no -tt) so the channel closes cleanly without
+                // delivering signals to the detached descendants.
+                //
+                // pkill <name> (NOT -f) — `pkill -f` matches the FULL command
+                // line including our own shell's argv, so `pkill -f Xvfb` kills
+                // the shell itself (exit 255, SSH dies). Plain pkill matches
+                // /proc/N/comm only, which is just the basename.
+                "mkdir -p ~/.utm-dev-run; pkill Xvfb 2>/dev/null; pkill openbox 2>/dev/null; pkill {bin_name} 2>/dev/null; sleep 1; setsid -f Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >~/.utm-dev-run/xvfb.log 2>&1; sleep 1; DISPLAY=:99 setsid -f openbox --replace >~/.utm-dev-run/openbox.log 2>&1 || true; sleep 1; DISPLAY=:99 setsid -f '{bin}'{args_suffix} >~/.utm-dev-run/run.log 2>&1; sleep 3; pgrep Xvfb >/dev/null && echo 'Xvfb running' || echo 'Xvfb DEAD'; pgrep {bin_name} >/dev/null && echo 'app running' || echo 'app DEAD — see ~/.utm-dev-run/run.log'; true"
+            )
+        }
+        profiles::GuestOs::Windows => {
+            // Start-Process -ArgumentList takes a PS array literal: @('a','b').
+            // Single-quote each arg and escape embedded single quotes by
+            // doubling them (PS literal-string escape).
+            let arglist = if args.is_empty() {
+                String::new()
+            } else {
+                let parts = args
+                    .iter()
+                    .map(|a| format!("'{}'", a.replace('\'', "''")))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(" -ArgumentList @({parts})")
+            };
+            format!(
+                // Start-Process detaches; redirect stdout/stderr to separate
+                // files so we can also surface stderr in vm logs.
+                //
+                // Single line (no `^` continuation): cmd's `^<nl>` line-join
+                // doesn't survive SSH delivery — the remote cmd sees literal
+                // `^\n` and treats `-Command` as parameter-less, producing
+                // PowerShell's help text. PowerShell's `;` works as a statement
+                // separator inside the -Command string; that's all we need.
+                r#"powershell -NoProfile -Command "$d='%USERPROFILE%\.utm-dev-run'; if (-not (Test-Path $d)) {{ New-Item -ItemType Directory -Path $d | Out-Null }}; $p = Start-Process -FilePath '{bin}'{arglist} -RedirectStandardOutput ($d + '\\run.log') -RedirectStandardError ($d + '\\run.log.err') -PassThru; Write-Output ('PID=' + $p.Id)""#
+            )
+        }
     };
 
     // Bypass exec_streaming — it injects -tt on Linux which forces a pty;
@@ -189,6 +219,13 @@ fn auto_detect_bin(
          Run `utm-dev vm build` first, or pass --bin explicitly.",
         candidates.join("\n  - ")
     );
+}
+
+/// Single-quote a shell arg, escaping embedded single quotes via the standard
+/// `'\''` close-escape-reopen idiom. Same approach as bootstrap/linux's
+/// shell_quote — duplicated here to keep run.rs free of cross-module imports.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// Tiny TOML scan for `[package] ... name = "x"`. Avoids pulling in a real

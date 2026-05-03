@@ -209,7 +209,12 @@ fn wait_for_winrm(port: u16, timeout_secs: u64) -> Result<()> {
             println!("  still booting... ({}s)", elapsed);
         }
     }
-    bail!("Timeout waiting for Windows WinRM ({}s)", timeout_secs);
+    bail!(
+        "Timeout waiting for Windows WinRM ({timeout_secs}s).\n  \
+         If the guest is up but the host→guest 5985 forward is stale (UTM applies\n  \
+         port-forward changes only on cold boot), recover with:\n  \
+         utm-dev vm refresh-network --name <profile>"
+    );
 }
 
 fn wait_for_ssh(profile: &VmProfile, timeout_secs: u64) -> Result<()> {

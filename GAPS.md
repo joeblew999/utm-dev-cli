@@ -41,8 +41,7 @@ The full pipeline is **proven against utm-dev-cli itself** (plain-cargo) AND **u
 6. **`vm package` exports as Vagrant `.box` — not yet tested for Apple Silicon redistribution.**
    Code path exists; never validated by another machine importing the produced `.box`.
 
-9. **WinRM port-forward fragile after VM restart.**
-   `vm up` configures the host→guest 5985 forward via AppleScript on the UTM bridged interface. After a VM stop/start cycle (or a cold UTM restart), the forward sometimes isn't active even though the WinRM service is running on the guest. Caught when an experiment routed `vm clean` through WinRM and it failed mid-session — reverted to ssh+CLIXML-strip. **Workaround in place:** all post-bootstrap operations stay on ssh; only initial bootstrap uses WinRM (which auto-fixes the forward via `vm up`). **Real fix:** auto-recheck/restore the port forward in `vm up`, or fall back to ssh→`Restart-Service WinRM` before retrying.
+9. ~~WinRM port-forward fragile after VM restart.~~ — **MITIGATED** via explicit recovery command. UTM applies port-forward config changes only on cold boot, so a stale forward survives until reapplied. New `utm-dev vm refresh-network --name <profile>` command stops the VM, re-runs `configure_network`, restarts, and waits for boot. Both the WinRM-not-reachable error message in bootstrap and the wait-for-boot timeout now point at this command. Auto-recovery in `vm up` was rejected — would force a stop/start every invocation since UTM can't modify port forwards on a running VM. Workaround in clean/debloat (stay on ssh + CLIXML strip) remains.
 
 7. ~~Missing: `utm-dev mcp` subcommand~~ — **DONE**. Ported from
    `joeblew999/utm-dev/.mise/tasks/mcp.ts` to `src/cmd/mcp.rs`. Generates

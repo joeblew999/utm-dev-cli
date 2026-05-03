@@ -11,15 +11,37 @@ UTM owns display, drivers, storage, and hardware config. `utm-dev` only orchestr
 
 ## Use mise tasks, not raw cargo
 
-This repo uses `mise.toml` as the single source of truth for build/install/test:
+This repo uses `mise.toml` as the single source of truth for build/install/test/quality:
 
 ```sh
-mise run build      # cargo build
-mise run install    # cargo install --path .
-mise run test       # cargo test
+mise run rust:build       # cargo build
+mise run rust:fmt         # cargo fmt --all
+mise run rust:fmt-check   # fail if fmt drift
+mise run rust:clippy      # cargo clippy --all-targets -- -D warnings
+mise run rust:quality     # fmt-check + clippy
+mise run install          # cargo install --path .
 ```
 
-Don't call cargo directly when a task exists. Add a task to `mise.toml` if one is missing.
+For end-to-end smoke (run before push):
+
+```sh
+mise run e2e:fast         # ~25s — host-only (quality + validate + mac + demo-mac, no VM)
+mise run e2e:smoke        # ~50s — adds doctor + windows-run + vm-run
+mise run e2e:smoke-full   # ~190s — adds clean-dry (only when touching vm clean)
+```
+
+Each task either calls `cargo` directly (host-side rust) or invokes the
+locally-built `./target/release/utm-dev` to dogfood our own commands
+(`vm push`, `vm exec`, `vm run`, `vm logs`). Don't reach for raw `scp`/`ssh`
+in tasks when a `utm-dev vm` subcommand exists.
+
+## Single binary — extract embedded shell to scripts/
+
+Multi-line PowerShell or bash inside Rust files goes in `scripts/<area>/<os>/<purpose>.{ps1,sh}` and gets pulled in via `include_str!()`. The binary stays single-file (4.5 MB), but the scripts get editor lint/highlighting and can be hand-tested by copying them into a guest. Templated scripts use `__MARKER__` placeholders + `.replace()` (not `format!()` — avoids the brace-doubling escape dance).
+
+Layout convention: `scripts/{bootstrap,clean,debloat}/{linux,windows}/<purpose>.{ps1,sh}`.
+
+Single-line shell (`mkdir ... && cd ... && tar`) stays inline.
 
 ## Source-of-truth invariant for VM bootstrap
 
