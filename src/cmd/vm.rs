@@ -481,17 +481,8 @@ fn vm_shell(name: &str) -> anyhow::Result<()> {
     ssh::check(profile)?;
     let target = format!("{}@localhost", profile.user);
     let status = std::process::Command::new("ssh")
-        .args([
-            "-p",
-            &profile.ssh_port.to_string(),
-            "-t",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "LogLevel=ERROR",
-        ])
+        .args(["-p", &profile.ssh_port.to_string(), "-t"])
+        .args(ssh::COMMON_OPTS)
         .arg(&target)
         .status()
         .map_err(|e| anyhow::anyhow!("failed to spawn ssh: {e}"))?;
@@ -517,19 +508,9 @@ fn vm_pull(name: &str, from: &str, to: &str) -> anyhow::Result<()> {
 
 fn scp_run(profile: &profiles::VmProfile, src: &str, dst: &str) -> anyhow::Result<()> {
     let status = std::process::Command::new("scp")
-        .args([
-            "-r",
-            "-P",
-            &profile.ssh_port.to_string(),
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "LogLevel=ERROR",
-            src,
-            dst,
-        ])
+        .args(["-r", "-P", &profile.ssh_port.to_string()])
+        .args(ssh::COMMON_OPTS)
+        .args([src, dst])
         .status()
         .map_err(|e| anyhow::anyhow!("failed to spawn scp: {e}"))?;
     if !status.success() {

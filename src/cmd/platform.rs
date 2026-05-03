@@ -392,7 +392,7 @@ fn tauri_android(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-pub fn android_env() -> Vec<(String, String)> {
+fn android_env() -> Vec<(String, String)> {
     let home = dirs::home_dir().unwrap_or_default();
     let android_home = std::env::var("ANDROID_HOME")
         .unwrap_or_else(|_| home.join(".android-sdk").to_string_lossy().into_owned());

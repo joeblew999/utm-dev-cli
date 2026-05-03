@@ -106,18 +106,9 @@ pub fn run(name: &str, bin: Option<&str>, args: &[String]) -> anyhow::Result<()>
     let target = format!("{}@localhost", profile.user);
     let port_str = profile.ssh_port.to_string();
     let status = std::process::Command::new("ssh")
-        .args([
-            "-p",
-            &port_str,
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "LogLevel=ERROR",
-            "-o",
-            "BatchMode=yes",
-        ])
+        .args(["-p", &port_str])
+        .args(ssh::COMMON_OPTS)
+        .args(ssh::BATCH_OPT)
         .arg(&target)
         .arg(&cmd)
         .status()?;

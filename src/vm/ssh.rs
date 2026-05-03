@@ -18,6 +18,26 @@ use std::process::Command;
 
 use super::profiles::{GuestOs, VmProfile};
 
+/// SSH/scp options common to every shellout: disable host-key prompting,
+/// throw away known_hosts entries (the VM may rotate keys across boots),
+/// silence the connection banner. **Does not include `BatchMode=yes`** —
+/// add that for programmatic calls (we want auth failure to bail fast,
+/// not hang on a password prompt). Interactive callers (`vm shell`,
+/// `vm push/pull`) deliberately omit it so a missing pubkey can fall
+/// back to a password prompt.
+pub const COMMON_OPTS: &[&str] = &[
+    "-o",
+    "StrictHostKeyChecking=no",
+    "-o",
+    "UserKnownHostsFile=/dev/null",
+    "-o",
+    "LogLevel=ERROR",
+];
+
+/// `BatchMode=yes` — refuse to ever block on a password prompt. Used by all
+/// programmatic ssh/scp paths inside this module and by `cmd/vm/run.rs`.
+pub const BATCH_OPT: &[&str] = &["-o", "BatchMode=yes"];
+
 /// Cheap connection handle. Owns a `VmProfile` clone so it lives independently
 /// of whatever loaned it the profile. No TCP/SSH state inside — every call
 /// spawns its own `ssh` subprocess.
@@ -69,18 +89,9 @@ pub fn exec_with_exit(session: &Session, cmd: &str) -> Result<(String, i32)> {
     let target = format!("{}@localhost", p.user);
     let port_str = p.ssh_port.to_string();
     let output = Command::new("ssh")
-        .args([
-            "-p",
-            &port_str,
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "LogLevel=ERROR",
-            "-o",
-            "BatchMode=yes",
-        ])
+        .args(["-p", &port_str])
+        .args(COMMON_OPTS)
+        .args(BATCH_OPT)
         .arg(&target)
         .arg(cmd)
         .output()
@@ -143,23 +154,14 @@ pub fn exec_streaming(profile: &VmProfile, cmd: &str) -> Result<i32> {
     // gets -tt; Windows uses plain pipes (we redirect to a log file at
     // the cmd-level for visibility instead).
     let port_str = profile.ssh_port.to_string();
-    let mut args: Vec<&str> = vec![
-        "-p",
-        &port_str,
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-        "-o",
-        "LogLevel=ERROR",
-        "-o",
-        "BatchMode=yes",
-    ];
+    let mut cmd_b = Command::new("ssh");
     if profile.os == GuestOs::Linux {
-        args.insert(0, "-tt");
+        cmd_b.arg("-tt");
     }
-    let status = Command::new("ssh")
-        .args(&args)
+    let status = cmd_b
+        .args(["-p", &port_str])
+        .args(COMMON_OPTS)
+        .args(BATCH_OPT)
         .arg(&target)
         .arg(cmd)
         .status()
@@ -187,20 +189,10 @@ pub fn download(profile: &VmProfile, remote_path: &str, local: &std::path::Path)
 
 fn scp(profile: &VmProfile, src: &str, dst: &str) -> Result<()> {
     let status = Command::new("scp")
-        .args([
-            "-P",
-            &profile.ssh_port.to_string(),
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "LogLevel=ERROR",
-            "-o",
-            "BatchMode=yes",
-            src,
-            dst,
-        ])
+        .args(["-P", &profile.ssh_port.to_string()])
+        .args(COMMON_OPTS)
+        .args(BATCH_OPT)
+        .args([src, dst])
         .status()
         .context("spawning scp")?;
     if !status.success() {
