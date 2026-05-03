@@ -36,8 +36,7 @@ The full pipeline is **proven against utm-dev-cli itself** (plain-cargo) AND **u
 4. **`vm screenshot` against Tauri Linux returns a black PNG.**
    Bare Xvfb has no GL backend. WebKit-GTK content (the WebView Tauri renders into) requires GL/EGL and silently doesn't paint. Process-level verification (`pgrep`, run.log) works fine.
 
-5. **"Last error stanzas" filter is a red-herring on build failure.**
-   The host's error filter in `vm/build.rs` greps the entire build log for any "error"-shaped line and shows them after a build fails. It frequently surfaces unrelated PowerShell parser errors from earlier in the log, sending the next debugger chasing ghosts. Cost us ~30 min during the 2026-05-03 dogfood. **Fix: only show error stanzas after the LAST `Compiling` line, or inside the last failure block.** ~30 line change.
+5. ~~"Last error stanzas" filter is a red-herring on build failure.~~ — **DONE**. `dump_build_log_errors` (`src/vm/build.rs`) now finds the last `^[[:space:]]*Compiling ` line and only greps for error stanzas after it. Falls back to whole-log scan if no `Compiling` line is present (early failures like mise install itself dying). Linux uses `awk`/`grep`/`tail`; Windows uses `Select-String -Pattern '^\s*Compiling '` to find the slice point.
 
 6. **`vm package` exports as Vagrant `.box` — not yet tested for Apple Silicon redistribution.**
    Code path exists; never validated by another machine importing the produced `.box`.

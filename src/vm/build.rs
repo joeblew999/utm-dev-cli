@@ -659,8 +659,12 @@ fn preflight_mise_toml(project_dir: &Path, kind: ProjectKind) -> Result<()> {
 }
 
 /// On build failure, fetch the tail of the build log from inside the VM
-/// and print just the error stanzas. Best-effort — if the VM can't be
-/// reached we just skip and let the bail message do the work.
+/// and print just the error stanzas — but **only stanzas after the last
+/// `Compiling` line** so we don't surface unrelated errors from earlier
+/// in the same log (e.g. PowerShell parser warnings during mise install).
+/// If no `Compiling` line is present (failure before cargo started, e.g.
+/// mise install itself died) we fall back to the whole log so we don't
+/// blackhole the actual cause.
 fn dump_build_log_errors(profile: &VmProfile) {
     let log_path = match profile.os {
         GuestOs::Linux => "~/.utm-dev-build/build.log",
@@ -668,19 +672,26 @@ fn dump_build_log_errors(profile: &VmProfile) {
     };
     let cmd = match profile.os {
         GuestOs::Linux => format!(
-            "grep -niE -A 5 -B 1 \
-             '(^error[:[ ]|^error\\[E[0-9]+\\]|^FAILED|^Failed |panic|fatal error|mise ERROR|unresolved external symbol|LNK[0-9]+|cannot find -l|linker .* not found)' \
-             {log_path} 2>/dev/null | tail -n 80"
+            // last=line of last `Compiling`, default 1 if missing.
+            // Slice from that line, then grep for error patterns, cap at 80 lines.
+            "last=$(grep -nE '^[[:space:]]*Compiling ' {log_path} 2>/dev/null | tail -1 | cut -d: -f1); \
+             tail -n +${{last:-1}} {log_path} 2>/dev/null | \
+             grep -niE -A 5 -B 1 \
+             '(^error[:[ ]|^error\\[E[0-9]+\\]|^FAILED|^Failed |panic|fatal error|mise ERROR|unresolved external symbol|LNK[0-9]+|cannot find -l|linker .* not found)' | \
+             tail -n 80"
         ),
         GuestOs::Windows => format!(
             r#"powershell -NoProfile -Command "if (Test-Path '{log_path}') {{ \
-                Get-Content '{log_path}' | Select-String -Pattern '^error[:[ ]|^error\[E[0-9]+\]|^FAILED|panic|fatal error|mise ERROR|unresolved external symbol|LNK[0-9]+|cannot find -l|linker .* not found' -Context 1,5 -CaseSensitive:$false | \
-                Select-Object -Last 12 | ForEach-Object {{ $_.Context.PreContext + $_.Line + $_.Context.PostContext + '---' }} \
+                $c = Get-Content '{log_path}'; \
+                $last = ($c | Select-String -Pattern '^\s*Compiling ').LineNumber | Select-Object -Last 1; \
+                $slice = if ($last) {{ $c[($last - 1)..($c.Count - 1)] }} else {{ $c }}; \
+                $hits = $slice | Select-String -Pattern '^error[:[ ]|^error\[E[0-9]+\]|^FAILED|panic|fatal error|mise ERROR|unresolved external symbol|LNK[0-9]+|cannot find -l|linker .* not found' -Context 1,5 -CaseSensitive:$false; \
+                if ($hits) {{ $hits | Select-Object -Last 12 | ForEach-Object {{ $_.Context.PreContext + $_.Line + $_.Context.PostContext + '---' }} }} else {{ '(no errors after last `Compiling` — try `vm logs --tail 200`)' }} \
               }} else {{ '(no build log)' }}""#
         ),
     };
     eprintln!(
-        "\n── Last error stanzas (from {} build log) ──",
+        "\n── Last error stanzas (from {} build log, post-last-Compiling) ──",
         profile.name
     );
     let _ = ssh::exec_streaming(profile, &cmd);
