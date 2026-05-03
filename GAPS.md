@@ -42,9 +42,24 @@ The full pipeline is **proven against utm-dev-cli itself** (plain-cargo) AND **u
 6. **`vm package` exports as Vagrant `.box` — not yet tested for Apple Silicon redistribution.**
    Code path exists; never validated by another machine importing the produced `.box`.
 
+7. **Missing: `utm-dev mcp` subcommand** (port from `joeblew999/utm-dev/.mise/tasks/mcp.ts`).
+   Generates `.mcp.json` + `.claude/settings.json` for AI-assisted development on any consumer Tauri project. Wires up:
+     - `context7` MCP server (`bunx @upstash/context7-mcp@latest`)
+     - `mise` MCP server (`mise mcp` with `MISE_EXPERIMENTAL=true`)
+     - Auto-allow permissions in Claude Code settings
+   Useful — every Tauri repo we onboard wants this. Idempotent. ~80 lines of Rust to port.
+
+8. **WebDriver-based screenshot** (port from `joeblew999/utm-dev/.mise/tasks/screenshot.ts`).
+   The TS version uses WebDriver to capture the **rendered** Tauri WebView. Our Rust `vm screenshot` uses `scrot` against Xvfb which returns a **black PNG** for WebKit-GTK content (gap #4 above). WebDriver fixes that — can capture actual app content, not just window frames. Requires tauri-driver in the VM.
+
 ## Future direction
 
 **ewe-studios/ewe_platform/foundation_testbed** — a Linux-host equivalent of utm-dev. Same problem space, different host OS. Worth understanding for cross-pollination: shared CLI surface? shared mise-task layer? unified harness across Mac+Linux hosts?
+
+**`joeblew999/utm-dev` (TypeScript) — superseded; archive after porting gaps #7 + #8.**
+Last commit 2026-03-25, tagged v2.1.0. 18 mise tasks in TypeScript covering doctor / setup / init / clean / screenshot / mcp / vm:{up,down,exec,build,package,delete}. utm-dev-cli is a superset EXCEPT for `mcp.ts` (gap #7) and the WebDriver `screenshot.ts` (gap #8). Once those land, the TS repo can be tagged final and archived; consumer Tauri repos that pin `git::utm-dev//.mise/tasks?ref=v2.1.0` should migrate to invoking `utm-dev-cli` directly.
+
+(Note: `docs/web/` in the utm-dev repo is unrelated CAD-app content — copy-paste mishap from another project. Not utm-dev documentation, ignore it.)
 
 **Expose utm-dev as an MCP server via [turbomcp](https://github.com/Epistates/turbomcp).** The CLI surface (vm up/down/build/exec/logs/clean/debloat/...) maps cleanly onto MCP tools. Devs and AI assistants would then drive cross-platform builds via standard MCP tooling instead of shelling out. CLI stays the engine; MCP is a thin adapter on top.
 
