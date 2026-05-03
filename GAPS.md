@@ -42,6 +42,9 @@ The full pipeline is **proven against utm-dev-cli itself** (plain-cargo) AND **u
 6. **`vm package` exports as Vagrant `.box` — not yet tested for Apple Silicon redistribution.**
    Code path exists; never validated by another machine importing the produced `.box`.
 
+9. **WinRM port-forward fragile after VM restart.**
+   `vm up` configures the host→guest 5985 forward via AppleScript on the UTM bridged interface. After a VM stop/start cycle (or a cold UTM restart), the forward sometimes isn't active even though the WinRM service is running on the guest. Caught when an experiment routed `vm clean` through WinRM and it failed mid-session — reverted to ssh+CLIXML-strip. **Workaround in place:** all post-bootstrap operations stay on ssh; only initial bootstrap uses WinRM (which auto-fixes the forward via `vm up`). **Real fix:** auto-recheck/restore the port forward in `vm up`, or fall back to ssh→`Restart-Service WinRM` before retrying.
+
 7. ~~Missing: `utm-dev mcp` subcommand~~ — **DONE**. Ported from
    `joeblew999/utm-dev/.mise/tasks/mcp.ts` to `src/cmd/mcp.rs`. Generates
    `.mcp.json` + `.claude/settings.json` (context7 + mise MCP servers,
@@ -69,7 +72,7 @@ The full pipeline is **proven against utm-dev-cli itself** (plain-cargo) AND **u
 
 ## Future direction
 
-**ewe-studios/ewe_platform/foundation_testbed** — a Linux-host equivalent of utm-dev. Same problem space, different host OS. Worth understanding for cross-pollination: shared CLI surface? shared mise-task layer? unified harness across Mac+Linux hosts?
+**ewe-studios/ewe_platform/foundation_testbed** — a Linux-host equivalent of utm-dev. Audited 2026-05-03 (commit `f74157f`); already ported the patterns that transfer cleanly: pixel-diff golden-image validation (`utm-dev validate`), per-platform bootstrap module split, embedded-script extraction to `scripts/*.{ps1,sh}` via `include_str!()`. Skipped patterns coupled to his Linux/QEMU host. Still open: shared mise-task layer? unified CLI across Mac+Linux hosts?
 
 **`joeblew999/utm-dev` (TypeScript) — superseded; safe to archive.**
 Last commit 2026-03-25, tagged v2.1.0. 18 mise tasks in TypeScript. utm-dev-cli is a full functional superset — both gap #7 (mcp) and gap #8 (WebDriver screenshot) are now done and verified. Tag the TS repo final and archive; consumer Tauri repos that pin `git::utm-dev//.mise/tasks?ref=v2.1.0` should migrate to invoking `utm-dev-cli` directly.
@@ -83,6 +86,16 @@ Last commit 2026-03-25, tagged v2.1.0. 18 mise tasks in TypeScript. utm-dev-cli 
 ---
 
 ## Recently resolved
+
+### 2026-05-03 — second pass: cleanup + cross-pollination (commits `46ca6c2` → `f74157f`)
+- **`utm-dev validate`** — pixel-diff golden-image regression command. Pairs with `utm-dev screenshot` (gap #8) for UI regression. ±16/255 channel drift survives anti-aliasing. Pattern adapted from ewe-studios/ewe_platform.
+- **Bootstrap module split** — `src/vm/bootstrap.rs` (547 LOC monolith) → `bootstrap/{mod.rs,linux.rs,windows.rs}`. Each platform reads top-down without scrolling past the other. Pure refactor.
+- **`ssh::exec_ps_windows` + CLIXML strip** — centralizes the Windows-PS-via-ssh pattern (UTF-16LE+Base64 + `-EncodedCommand`) and strips PowerShell's CLIXML envelope. Was producing 6 KB XML noise blocks in `e2e:clean-dry` output. Now ends `✓ done` cleanly.
+- **Embedded shell scripts → `scripts/{bootstrap,clean,debloat}/*/{*.ps1,*.sh}` via `include_str!()`** — half of `bootstrap/windows.rs`, all of `cmd/vm/clean.rs`, all of `cmd/vm/debloat.rs` were PowerShell as Rust string literals. Net: −426 LOC of Rust, +395 lines of properly-syntax-highlighted scripts in 16 files. Single binary (4.5 MB) preserved via `include_str!()`. Per-OS subfolders: `clean/{linux,windows}/`, `debloat/windows/`, `bootstrap/windows/`.
+- **`mise.toml` quality + e2e taxonomy** — new `rust:quality` (fmt-check + clippy `-D warnings`), `e2e:fast` (host-only ~25s), `e2e:smoke` (~50s, no clean-dry), `e2e:smoke-full` (~190s, kitchen sink). Pre-push gate without the 150 s WU-cache scan.
+- **e2e dogfoods utm-dev commands** — `e2e:windows-run` was raw `scp + ssh`; now uses `utm-dev vm push` + `utm-dev vm exec`. New `e2e:vm-run` exercises `utm-dev vm run` + `vm logs` end-to-end.
+- **`vm logs --kind run` on Windows surfaces stderr** — `Start-Process` splits stdout (`run.log`) and stderr (`run.log.err`); previously only stdout was visible, hiding clap help output (which goes to stderr) and Tauri release-build complaints.
+- **README trim** — 261 → 88 lines. `docs/adr-001-vm-run-observability.md` deleted (design shipped, ADR was cargo-cult).
 
 ### 2026-05-03 — infrastructure pass (commit `4a43ce2`)
 - **Isomorphic mac/linux/windows build harness.** Same flags, same `.build/<platform>/<arch>/` output dir, same mise.toml-respecting cargo invocation. Native mac builds use `mise exec -- cargo` when possible.
