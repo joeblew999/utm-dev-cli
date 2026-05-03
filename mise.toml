@@ -160,13 +160,54 @@ if not ($out | str contains "100.00%") {
 print "✓ utm-dev validate self-comparison = 100%"
 '''
 
+[tasks."e2e:tauri-demo-windows"]
+description = "smoke: end-to-end Tauri demo on Windows VM — push pre-built MSI, install silently, vm run --interactive, vm screenshot, validate against golden. Skips if no MSI built (run `cd ../utm-dev-demo && utm-dev windows build --release` first). Visual proof that Tauri release apps render correctly on the windows-build VM."
+shell = "nu -c"
+depends = ["_e2e:build"]
+run = '''
+let demo = ($env.UTM_DEV_DEMO_PATH? | default "../utm-dev-demo")
+let msi = $"($demo)/.build/windows/x86_64/msi/utm-dev-demo_0.1.0_x64_en-US.msi"
+if not ($msi | path exists) {
+  print $"  (skip) ($msi) not present — run `cd ($demo) && utm-dev windows build --release` first"
+  return
+}
+let utm_dev = "./target/release/utm-dev"
+let golden = "tests/golden/utm-dev-demo-windows.png"
+let actual = "screenshots/utm-dev-demo-windows-e2e.png"
+let diff = "screenshots/utm-dev-demo-windows-e2e.diff.png"
+
+print "→ pushing MSI to VM..."
+^$utm_dev vm push --name windows-build --from $msi --to "C:\\Users\\vagrant\\demo.msi"
+
+print "→ installing MSI silently (idempotent)..."
+^$utm_dev vm exec --name windows-build "msiexec /i C:\\Users\\vagrant\\demo.msi /qn /norestart"
+
+print "→ launching utm-dev-demo via vm run --interactive..."
+^$utm_dev vm run --name windows-build --interactive --bin "C:\\Program Files\\utm-dev-demo\\utm-dev-demo.exe"
+
+print "→ waiting 4s for WebView2 to render..."
+sleep 4sec
+
+print "→ capturing desktop..."
+^$utm_dev vm screenshot --name windows-build --out $actual
+
+print "→ pixel-diff vs golden..."
+let result = (^$utm_dev validate --actual $actual --golden $golden --tolerance 90 --diff $diff | str trim)
+print $result
+if not ($result | str contains "100.00%") and not ($result | str contains "match: 9") {
+  print "  ✗ validation failed"
+  exit 1
+}
+print "✓ Tauri demo running on Windows — verified by pixel-diff"
+'''
+
 [tasks."e2e:fast"]
 description = "host-only smoke (~25s) — quality + validate + mac + demo-mac. No VM, no network. Run on every save."
 depends = ["rust:quality", "e2e:validate", "e2e:mac", "e2e:demo-mac"]
 
 [tasks."e2e:smoke"]
-description = "pre-push smoke (~50s) — quality + validate + all VM tasks EXCEPT e2e:clean-dry (which scans the WU cache and takes 140s solo). Run e2e:clean-dry by hand or use e2e:smoke-full when working on vm clean."
-depends = ["rust:quality", "e2e:validate", "e2e:doctor", "e2e:mac", "e2e:demo-mac", "e2e:windows-run", "e2e:vm-run"]
+description = "pre-push smoke (~70s) — quality + validate + all VM tasks EXCEPT e2e:clean-dry (which scans the WU cache and takes 140s solo). Includes e2e:tauri-demo-windows for visual proof that Tauri release apps actually render. Run e2e:clean-dry by hand or use e2e:smoke-full when working on vm clean."
+depends = ["rust:quality", "e2e:validate", "e2e:doctor", "e2e:mac", "e2e:demo-mac", "e2e:windows-run", "e2e:vm-run", "e2e:tauri-demo-windows"]
 
 [tasks."e2e:smoke-full"]
 description = "the kitchen sink (~190s) — e2e:smoke + e2e:clean-dry. Use when you've touched src/cmd/vm/clean.rs or the scripts/clean/ payload. Otherwise use e2e:smoke."

@@ -95,6 +95,13 @@ pub enum VmCommands {
         /// If omitted, auto-detects the most recent bundle for the host's arch.
         #[arg(long)]
         bin: Option<String>,
+        /// Windows: launch in vagrant's logged-on desktop session via Scheduled
+        /// Task /IT. Required for Win32 GUI apps (Tauri release builds) — the
+        /// default Start-Process path runs in a non-interactive window station
+        /// and silently exits GUI apps. Linux: no-op (Xvfb session already
+        /// interactive).
+        #[arg(long)]
+        interactive: bool,
         /// Args to pass to the binary. Use `--` to separate from utm-dev's own
         /// flags, e.g. `vm run --name X --bin foo.exe -- --version --json`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -230,7 +237,12 @@ pub fn run(cmd: VmCommands) -> anyhow::Result<()> {
             target,
             release,
         } => vm_build(&name, target, release),
-        VmCommands::Run { name, bin, args } => run::run(&name, bin.as_deref(), &args),
+        VmCommands::Run {
+            name,
+            bin,
+            interactive,
+            args,
+        } => run::run(&name, bin.as_deref(), &args, interactive),
         VmCommands::Screenshot { name, out } => vm_screenshot(&name, &out),
         VmCommands::Delete { name } => vm_delete(&name),
         VmCommands::Package { name } => package::run(&name),
@@ -561,32 +573,108 @@ fn vm_ls() -> anyhow::Result<()> {
 
 fn vm_screenshot(name: &str, out: &str) -> anyhow::Result<()> {
     let profile = profiles::get(name)?;
-    if profile.os != profiles::GuestOs::Linux {
-        anyhow::bail!(
-            "vm screenshot is Linux-only for now. \
-             Windows VMs: connect via RDP at 127.0.0.1:{} (user vagrant / pass vagrant) \
-             for visual access; programmatic capture from a headless SSH session needs \
-             an active desktop session, which utm-dev doesn't currently provision.",
-            profile.rdp_port.unwrap_or(3389),
-        );
-    }
-    ssh::check(profile)?;
-    let session = ssh::connect(profile)?;
-
-    let remote = "/tmp/utm-dev-screenshot.png";
-    println!("→ Capturing display :99 on {name}...");
-    let (out_text, code) = ssh::exec_with_exit(
-        &session,
-        &format!("DISPLAY=:99 scrot --overwrite {remote} 2>&1 && ls -la {remote}"),
-    )?;
-    if code != 0 {
-        anyhow::bail!("screenshot failed (is `vm run` running with Xvfb on :99?):\n{out_text}");
-    }
-
     let local = std::path::PathBuf::from(out);
-    println!("→ Pulling {} → {}", remote, local.display());
-    ssh::download(profile, remote, &local)?;
-    println!("✓ {}", local.display());
+
+    match profile.os {
+        profiles::GuestOs::Linux => {
+            ssh::check(profile)?;
+            let session = ssh::connect(profile)?;
+            let remote = "/tmp/utm-dev-screenshot.png";
+            println!("→ Capturing display :99 on {name}...");
+            let (out_text, code) = ssh::exec_with_exit(
+                &session,
+                &format!("DISPLAY=:99 scrot --overwrite {remote} 2>&1 && ls -la {remote}"),
+            )?;
+            if code != 0 {
+                anyhow::bail!(
+                    "screenshot failed (is `vm run` running with Xvfb on :99?):\n{out_text}"
+                );
+            }
+            println!("→ Pulling {} → {}", remote, local.display());
+            ssh::download(profile, remote, &local)?;
+            println!("✓ {}", local.display());
+        }
+        profiles::GuestOs::Windows => {
+            // Capture the Windows desktop from INSIDE the guest, not the macOS
+            // UTM window. The macOS screencapture path lost the focus race
+            // every time another app (chat, IDE) was sticky frontmost.
+            //
+            // Mechanism: render desktop.ps1 (it does Graphics.CopyFromScreen
+            // → PNG), push it to the VM, run it via Scheduled Task /RU vagrant
+            // /IT so it inherits the logged-on interactive desktop, then scp
+            // the PNG back. Same /IT pattern as `vm run --interactive`.
+            //
+            // Bonus: this is independent of where the macOS user has their
+            // foreground; UTM doesn't even need to be visible on the Mac.
+            ssh::check(profile)?;
+            let session = ssh::connect(profile)?;
+            if let Some(parent) = local.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            let remote_png = r"C:\Users\vagrant\.utm-dev-run\screenshot.png";
+            let remote_ps = r"C:\Users\vagrant\.utm-dev-run\screenshot.ps1";
+            const SCRIPT: &str = include_str!("../../scripts/screenshot/windows/desktop.ps1");
+            let body = SCRIPT.replace("__OUTPUT_PATH__", remote_png);
+
+            let local_temp = std::env::temp_dir().join("utm-dev-screenshot.ps1");
+            std::fs::write(&local_temp, &body)?;
+
+            println!("→ Staging desktop.ps1 in {name}...");
+            // Ensure target dir exists + delete any stale screenshot from a
+            // prior run (otherwise our probe loop sees an old file and pulls
+            // it before the new one lands).
+            ssh::exec_ps_windows(
+                &session,
+                "if (-not (Test-Path \"$env:USERPROFILE\\.utm-dev-run\")) { \
+                 New-Item -ItemType Directory -Path \"$env:USERPROFILE\\.utm-dev-run\" \
+                 -Force | Out-Null }; \
+                 Remove-Item \"$env:USERPROFILE\\.utm-dev-run\\screenshot.png\" \
+                 -ErrorAction SilentlyContinue",
+            )?;
+            ssh::upload(profile, &local_temp, remote_ps)?;
+
+            println!("→ Capturing vagrant's desktop via /IT scheduled task...");
+            let task = format!(
+                r#"schtasks /Create /TN UtmDevScreenshot /TR "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File {remote_ps}" /SC ONCE /ST 23:59 /RU vagrant /IT /F"#
+            );
+            let (out_text, code) = ssh::exec_with_exit(&session, &task)?;
+            if code != 0 {
+                anyhow::bail!("schtasks /Create failed (exit {code}): {out_text}");
+            }
+            let (out_text, code) =
+                ssh::exec_with_exit(&session, "schtasks /Run /TN UtmDevScreenshot")?;
+            if code != 0 {
+                anyhow::bail!("schtasks /Run failed (exit {code}): {out_text}");
+            }
+            // Wait for the PNG to land (the task is async — schtasks /Run
+            // returns immediately). Poll for the file with a sane timeout.
+            let mut attempts = 0;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                attempts += 1;
+                let probe =
+                    format!(r#"if (Test-Path '{remote_png}') {{ 'OK' }} else {{ 'NOPE' }}"#);
+                let (probe_out, _) = ssh::exec_ps_windows(&session, &probe)?;
+                if probe_out.trim() == "OK" {
+                    break;
+                }
+                if attempts >= 20 {
+                    anyhow::bail!(
+                        "screenshot.png didn't appear within 10s — check schtasks history \
+                         on the VM (the task ran but Graphics.CopyFromScreen may have \
+                         failed; that happens if vagrant isn't logged on)."
+                    );
+                }
+            }
+
+            // scp eats Windows backslashes when shelled-out; use forward slashes
+            // for the source path (the file itself is fine on either separator).
+            let remote_png_scp = remote_png.replace('\\', "/");
+            println!("→ Pulling {} → {}", remote_png_scp, local.display());
+            ssh::download(profile, &remote_png_scp, &local)?;
+            println!("✓ {}", local.display());
+        }
+    }
     Ok(())
 }
 

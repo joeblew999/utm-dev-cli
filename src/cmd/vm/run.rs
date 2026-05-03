@@ -1,6 +1,11 @@
 //! `utm-dev vm run` — launch a built binary inside the VM and capture its
 //! startup output. Linux uses Xvfb + openbox so GTK windows actually map;
-//! Windows uses Start-Process with redirected stdout/stderr.
+//! Windows headless uses Start-Process with redirected stdout/stderr.
+//!
+//! `--interactive` (Windows): launch via Scheduled Task with /RU vagrant /IT,
+//! so Win32 GUI apps (Tauri release builds) actually appear in vagrant's
+//! logged-on desktop session — Start-Process over SSH inherits a non-
+//! interactive window station and silently exits GUI apps (GAPS #3).
 //!
 //! Auto-detects the binary path from the project's Cargo.toml package name
 //! when `--bin` is omitted. Tries `CARGO_TARGET_DIR/<triple>/release/<name>`
@@ -8,7 +13,14 @@
 
 use crate::vm::{profiles, ssh};
 
-pub fn run(name: &str, bin: Option<&str>, args: &[String]) -> anyhow::Result<()> {
+const INTERACTIVE_PS: &str = include_str!("../../../scripts/vm-run/windows/interactive.ps1");
+
+pub fn run(
+    name: &str,
+    bin: Option<&str>,
+    args: &[String],
+    interactive: bool,
+) -> anyhow::Result<()> {
     let profile = profiles::get(name)?;
     ssh::check(profile)?;
     let session = ssh::connect(profile)?;
@@ -24,6 +36,16 @@ pub fn run(name: &str, bin: Option<&str>, args: &[String]) -> anyhow::Result<()>
     println!("→ binary: {bin}");
     if !args.is_empty() {
         println!("→ args:   {}", args.join(" "));
+    }
+
+    if interactive && profile.os == profiles::GuestOs::Windows {
+        return run_windows_interactive(profile, &session, bin, args);
+    }
+    if interactive && profile.os == profiles::GuestOs::Linux {
+        // Linux already lands in an interactive Xvfb session — flag is a no-op.
+        println!(
+            "  (note: --interactive is a no-op for Linux; Xvfb session is already interactive)"
+        );
     }
 
     println!("→ Launching {bin} in {name} (output → ~/.utm-dev-run/run.log)...");
@@ -119,6 +141,72 @@ pub fn run(name: &str, bin: Option<&str>, args: &[String]) -> anyhow::Result<()>
         );
     }
     println!("✓ Launched. Tail output:  utm-dev vm logs --name {name} --kind run --follow");
+    Ok(())
+}
+
+/// Windows interactive launch: write the rendered PS to the VM, register a
+/// Scheduled Task with `/RU vagrant /IT`, run it. The task body inherits
+/// vagrant's logged-on desktop session, so Win32 GUI apps actually appear
+/// instead of being silently exited like they are under headless Start-Process.
+///
+/// Uses ssh::upload to push the rendered .ps1 (multi-line PS over a single
+/// `Set-Content` exec is fragile; pushing the file is reliable). Cleanup of
+/// the script + task is best-effort — they're harmless leftovers if missed.
+fn run_windows_interactive(
+    profile: &profiles::VmProfile,
+    session: &ssh::Session,
+    bin: &str,
+    args: &[String],
+) -> anyhow::Result<()> {
+    let arglist = if args.is_empty() {
+        String::new()
+    } else {
+        let parts = args
+            .iter()
+            .map(|a| format!("'{}'", a.replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(" -ArgumentList @({parts})")
+    };
+    let script = INTERACTIVE_PS
+        .replace("__BIN__", bin)
+        .replace("__ARGLIST__", &arglist);
+
+    // Stage the rendered PS via a host temp file + scp.
+    let local = std::env::temp_dir().join("utm-dev-vm-run-interactive.ps1");
+    std::fs::write(&local, &script)?;
+    let remote = "C:\\Users\\vagrant\\.utm-dev-run\\interactive.ps1";
+
+    // Ensure the remote dir exists before pushing.
+    ssh::exec_ps_windows(
+        session,
+        "if (-not (Test-Path \"$env:USERPROFILE\\.utm-dev-run\")) { \
+         New-Item -ItemType Directory -Path \"$env:USERPROFILE\\.utm-dev-run\" -Force | Out-Null }",
+    )?;
+    ssh::upload(profile, &local, remote)?;
+
+    // Register + run the interactive scheduled task. /SC ONCE /ST 23:59 is a
+    // never-naturally-fires schedule; we trigger via /Run immediately. /IT
+    // means "interactive task — only when user is logged on" which Vagrant's
+    // autologon guarantees.
+    let task = format!(
+        r#"schtasks /Create /TN UtmDevInteractive /TR "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File {remote}" /SC ONCE /ST 23:59 /RU vagrant /IT /F"#
+    );
+    let (out, code) = ssh::exec_with_exit(session, &task)?;
+    if code != 0 {
+        anyhow::bail!("schtasks /Create failed (exit {code}): {out}");
+    }
+    let (out, code) = ssh::exec_with_exit(session, "schtasks /Run /TN UtmDevInteractive")?;
+    if code != 0 {
+        anyhow::bail!("schtasks /Run failed (exit {code}): {out}");
+    }
+
+    println!(
+        "✓ Launched in vagrant's interactive desktop session.\n  \
+         Bring UTM forward + capture: utm-dev vm screenshot --name {}\n  \
+         PID stamp:  C:\\Users\\vagrant\\.utm-dev-run\\launched-pid.txt",
+        profile.name
+    );
     Ok(())
 }
 

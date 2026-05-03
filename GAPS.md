@@ -30,8 +30,7 @@ The full pipeline is **proven against utm-dev-cli itself** (plain-cargo) AND **u
 2. **Linux x86_64 cross-compile — partially done.**
    Linux ARM64 → ARM64 native works. Linux ARM64 → x86_64 needs Debian multiarch (libwebkit2gtk-4.1-dev:amd64 + gcc-x86-64-linux-gnu + linker env). `ensure_linux_multiarch` provisions on first `--target x86-64` invocation. Tested ad-hoc, not recently dogfooded.
 
-3. **Tauri Windows release builds exit silently in headless `vm run`.**
-   Tauri Windows release apps use the GUI subsystem (no stdout) and exit immediately when launched in a non-interactive desktop session. **Not a utm-dev bug** — Win32 GUI subsystem + headless SSH session interaction. For visual verification: RDP into the VM (port `3389` forwarded), or have the app embed an out-of-band logger.
+3. ~~Tauri Windows release builds exit silently in headless `vm run`.~~ — **MITIGATED** via `vm run --interactive`. Default `vm run` still uses Start-Process (non-interactive window station — fine for CLI binaries that print to redirected stdout/stderr). `--interactive` writes a Scheduled Task with `/RU vagrant /IT` so the binary inherits vagrant's logged-on desktop session — Win32 GUI windows actually appear instead of silently exiting. Paired with `vm screenshot` (which now does the same `/IT` dance for `Graphics.CopyFromScreen` inside the guest) gives visual proof in ~70s. See `mise run e2e:tauri-demo-windows`.
 
 4. **`vm screenshot` against Tauri Linux returns a black PNG.**
    Bare Xvfb has no GL backend. WebKit-GTK content (the WebView Tauri renders into) requires GL/EGL and silently doesn't paint. Process-level verification (`pgrep`, run.log) works fine.

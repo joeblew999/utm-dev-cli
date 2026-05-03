@@ -53,7 +53,9 @@ utm-dev vm down    --name windows-build
 utm-dev vm doctor  --name windows-build             # in-VM health checks
 utm-dev vm shell   --name windows-build             # interactive ssh
 utm-dev vm exec    --name windows-build -- "ver"    # run one command
-utm-dev vm run     --name X --bin foo.exe -- --version    # launch + capture stdout
+utm-dev vm run     --name X --bin foo.exe -- --version    # launch + capture stdout (CLI)
+utm-dev vm run     --name X --bin app.exe --interactive   # launch GUI app in logged-on desktop
+utm-dev vm screenshot --name X --out app.png              # PNG capture (Linux: scrot/Xvfb; Windows: in-VM)
 utm-dev vm push    --name X --from ./local --to /vm/path
 utm-dev vm pull    --name X --from /vm/path --to ./local
 utm-dev vm logs    --name X --kind run --tail 50    # tail captured stdout/stderr
