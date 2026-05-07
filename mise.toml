@@ -5,7 +5,7 @@
 # Local tasks add only what's specific to this binary (run, install).
 
 [task_config]
-includes = ["git::https://github.com/joeblew999/.github.git//mise-tasks?ref=v0.10.0"]
+includes = ["git::https://github.com/joeblew999/.github.git//mise-tasks?ref=v0.19.1"]
 
 [tools]
 rust                     = "nightly"
