@@ -12,11 +12,11 @@ idiomatic_version_file_enable_tools = ["rust"]
 includes = ["git::https://github.com/joeblew999/.github.git//mise-tasks?ref=v0.20.0"]
 
 [tools]
-"github:nushell/nushell" = "0.112"  # required by .github v0.10.0+ (all shared mise-tasks are nu)
-"github:jdx/fnox"        = "1.23"   # for secrets:* + bw:* shared tasks
-"aqua:cli/cli"           = "2"      # gh CLI; needed by secrets:sync-github
-"aqua:jqlang/jq"         = "1"      # used by some shared bash steps
-"cargo:usage-cli"        = "3"      # tab-completion for #USAGE-spec tasks
+"github:nushell/nushell" = "0.112.2"  # required by .github v0.10.0+ (all shared mise-tasks are nu)
+"github:jdx/fnox"        = "1.23.1"   # for secrets:* + bw:* shared tasks
+"aqua:cli/cli"           = "2.101.0"      # gh CLI; needed by secrets:sync-github
+"aqua:jqlang/jq"         = "1.8.2"      # used by some shared bash steps
+"cargo:usage-cli"        = "3.6.0"      # tab-completion for #USAGE-spec tasks
 
 # Shared rust:build / rust:test / rust:wasm-pack are now nu — they shell
 # out to cargo, same as the bash equivalents did. Local tasks below add
