@@ -6,7 +6,7 @@ Punch list of what's missing or rough. Triaged by impact.
 
 **Rust + tauri-cli + bun + node etc. are pinned by the user's project `mise.toml` — utm-dev's bootstrap does NOT install language runtimes.** The bootstrap only installs *non-mise-managed* prerequisites (apt deps, VS Build Tools, OpenSSH, WebView2, Defender exclusions). Anything mise can manage stays in mise's hands.
 
-This is why a project consuming utm-dev MUST have `[tools] rust = "..."` (and `cargo:tauri-cli`, `bun`, etc.) declared in its `mise.toml` — every build runs `mise install` (in the VM for cross-target, on the host for `mac build`) to provision exactly those.
+This is why a project consuming utm-dev MUST pin Rust in `rust-toolchain.toml` with `idiomatic_version_file_enable_tools = ["rust"]` in its `mise.toml` (and declare `cargo:tauri-cli`, `bun`, etc. there) — every build runs `mise install` (in the VM for cross-target, on the host for `mac build`) to provision exactly those.
 
 ## Validated end-to-end
 

@@ -4,11 +4,14 @@
 # rust:build / rust:test / rust:wasm-pack / secrets:* / fnox:init for free.
 # Local tasks add only what's specific to this binary (run, install).
 
+[settings]
+# rust-toolchain.toml is the Rust pin; this makes `mise install` honour it.
+idiomatic_version_file_enable_tools = ["rust"]
+
 [task_config]
 includes = ["git::https://github.com/joeblew999/.github.git//mise-tasks?ref=v0.20.0"]
 
 [tools]
-rust                     = "nightly"
 "github:nushell/nushell" = "0.112"  # required by .github v0.10.0+ (all shared mise-tasks are nu)
 "github:jdx/fnox"        = "1.23"   # for secrets:* + bw:* shared tasks
 "aqua:cli/cli"           = "2"      # gh CLI; needed by secrets:sync-github

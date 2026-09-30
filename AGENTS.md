@@ -47,7 +47,7 @@ Single-line shell (`mkdir ... && cd ... && tar`) stays inline.
 
 Bootstrap installs **only** non-mise-managed prerequisites — apt deps, VS Build Tools + WebView2, OpenSSH, sshd config, host pubkey. **It does NOT install Rust, tauri-cli, bun, node, or anything mise can manage.** Those come from the user's project `mise.toml` when `vm build` runs `mise install` inside the project dir.
 
-Consequence: a project consuming utm-dev MUST declare its language runtimes in `mise.toml` (e.g. `[tools] rust = "stable"`, `"cargo:tauri-cli" = "2"`). If a runtime isn't there, the build fails — and that's the *correct* failure mode, because the project should pin its toolchain for reproducibility.
+Consequence: a project consuming utm-dev MUST pin its language runtimes: Rust in `rust-toolchain.toml` (with `idiomatic_version_file_enable_tools = ["rust"]` in `mise.toml` so `mise install` provisions it), everything else in `mise.toml` (e.g. `"cargo:tauri-cli" = "2"`). If a runtime isn't there, the build fails — and that's the *correct* failure mode, because the project should pin its toolchain for reproducibility.
 
 ## Test repo for end-to-end
 

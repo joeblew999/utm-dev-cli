@@ -10,7 +10,7 @@ utm-dev linux   build      # → .build/linux/arm64/<bin>       (or .deb / .AppI
 ```
 
 Detects whether your project is Tauri (has `src-tauri/`) or plain cargo and
-dispatches accordingly. No setup beyond `mise.toml` with `[tools] rust = "..."`.
+dispatches accordingly. No setup beyond a `rust-toolchain.toml` and `idiomatic_version_file_enable_tools = ["rust"]` in `mise.toml`.
 
 ## Requirements
 
